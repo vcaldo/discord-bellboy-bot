@@ -117,6 +117,40 @@ class BellboyBot(commands.Bot):
             await self.join_busiest_channel(ctx.guild)
             await ctx.send("🤖 Checking for busiest voice channel...")
 
+        @self.command(name='check_busiest')
+        async def check_busiest_command(ctx: commands.Context) -> None:
+            """Check and display the busiest voice channel without joining."""
+            if not self._is_monitoring_guild(ctx.guild):
+                return
+
+            try:
+                busiest_channel, max_members = await self.find_busiest_voice_channel(ctx.guild)
+
+                if busiest_channel and max_members > 0:
+                    embed = discord.Embed(
+                        title="🔍 Busiest Voice Channel",
+                        description=f"**{busiest_channel.name}** has {max_members} member{'s' if max_members != 1 else ''}",
+                        color=EMBED_COLOR_SUCCESS
+                    )
+
+                    # List members in the channel
+                    members_list = [member.display_name for member in busiest_channel.members if not member.bot]
+                    if members_list:
+                        embed.add_field(
+                            name="Members",
+                            value=", ".join(members_list[:10]) + ("..." if len(members_list) > 10 else ""),
+                            inline=False
+                        )
+
+                    await ctx.send(embed=embed)
+                else:
+                    await ctx.send("🔍 No active voice channels found.")
+
+            except Exception as e:
+                safe_guild_name = self._safe_guild_name(ctx.guild)
+                self.logger.error(f"[{safe_guild_name}] Error checking busiest channel: {e}")
+                await ctx.send("❌ Error checking voice channels. Please try again later.")
+
         @self.command(name='leave_voice')
         async def leave_voice_command(ctx: commands.Context) -> None:
             """Make the bot leave the current voice channel."""
@@ -236,10 +270,49 @@ class BellboyBot(commands.Bot):
             if guild:
                 safe_guild_name = self._safe_guild_name(guild)
                 self.logger.info(f'Monitoring guild: {safe_guild_name} (ID: {guild.id})')
+
+                # Check and join busiest channel on startup if auto_join is enabled
+                if config.auto_join_busiest:
+                    await self._check_and_join_busiest_on_startup(guild)
             else:
                 self.logger.warning(f'Could not find guild with ID: {config.guild_id}')
         else:
             self.logger.info('Monitoring all guilds')
+
+            # Check and join busiest channel for all guilds if auto_join is enabled
+            if config.auto_join_busiest:
+                for guild in self.guilds:
+                    await self._check_and_join_busiest_on_startup(guild)
+
+    async def _check_and_join_busiest_on_startup(self, guild: discord.Guild) -> None:
+        """
+        Check and join the busiest voice channel on bot startup.
+
+        Args:
+            guild: Discord guild to check for busiest channel
+        """
+        try:
+            # Skip if bot is already connected to a voice channel in this guild
+            if guild.voice_client and guild.voice_client.is_connected():
+                return
+
+            # Find the busiest channel
+            busiest_channel, max_members = await self.find_busiest_voice_channel(guild)
+
+            if busiest_channel and max_members > 0:
+                await busiest_channel.connect()
+                safe_guild_name = self._safe_guild_name(guild)
+                self.logger.info(f"[{safe_guild_name}] Bot joined busiest channel on startup: {busiest_channel.name} ({max_members} members)")
+            else:
+                safe_guild_name = self._safe_guild_name(guild)
+                self.logger.info(f"[{safe_guild_name}] No active voice channels found on startup")
+
+        except discord.ClientException as e:
+            safe_guild_name = self._safe_guild_name(guild)
+            self.logger.error(f"[{safe_guild_name}] Discord client error joining voice channel on startup: {e}")
+        except Exception as e:
+            safe_guild_name = self._safe_guild_name(guild)
+            self.logger.error(f"[{safe_guild_name}] Unexpected error checking busiest channel on startup: {e}")
 
     async def find_busiest_voice_channel(self, guild: discord.Guild) -> Tuple[Optional[discord.VoiceChannel], int]:
         """
@@ -401,6 +474,9 @@ class BellboyBot(commands.Bot):
             # Only try to join busiest channel when someone joins AND bot isn't already connected
             if config.auto_join_busiest and not member.guild.voice_client:
                 await self.join_busiest_channel_on_join(member.guild)
+            # If bot is connected, check if we should move to a busier channel
+            elif config.auto_join_busiest and member.guild.voice_client:
+                await self._check_if_should_move_to_busier_channel(member.guild)
 
         # User left a voice channel
         elif before.channel is not None and after.channel is None:
@@ -410,6 +486,9 @@ class BellboyBot(commands.Bot):
             # Check if bot should leave if the channel became empty
             if config.auto_leave_empty:
                 await self.check_and_leave_if_empty(member.guild)
+            # Also check if there's now a busier channel to move to
+            elif config.auto_join_busiest and member.guild.voice_client:
+                await self._check_if_should_move_to_busier_channel(member.guild)
 
         # User moved between voice channels
         elif before.channel is not None and after.channel is not None and before.channel != after.channel:
@@ -419,6 +498,40 @@ class BellboyBot(commands.Bot):
             # Check if bot should leave if the channel they left became empty
             if config.auto_leave_empty:
                 await self.check_and_leave_if_empty(member.guild)
+            # Check if we should move to a busier channel due to the population change
+            elif config.auto_join_busiest and member.guild.voice_client:
+                await self._check_if_should_move_to_busier_channel(member.guild)
+
+    async def _check_if_should_move_to_busier_channel(self, guild: discord.Guild) -> None:
+        """
+        Check if the bot should move to a busier voice channel.
+
+        Args:
+            guild: Discord guild to check
+        """
+        try:
+            # Only proceed if bot is connected
+            if not guild.voice_client or not guild.voice_client.is_connected():
+                return
+
+            current_channel = guild.voice_client.channel
+            current_members = self._count_human_members(current_channel)
+
+            # Find the busiest channel
+            busiest_channel, max_members = await self.find_busiest_voice_channel(guild)
+
+            # Move to busier channel if it has significantly more members (at least 1 more)
+            if busiest_channel and busiest_channel != current_channel and max_members > current_members:
+                await guild.voice_client.move_to(busiest_channel)
+                safe_guild_name = self._safe_guild_name(guild)
+                self.logger.info(f"[{safe_guild_name}] Bot moved to busier channel: {busiest_channel.name} ({max_members} members, was in {current_channel.name} with {current_members} members)")
+
+        except discord.ClientException as e:
+            safe_guild_name = self._safe_guild_name(guild)
+            self.logger.error(f"[{safe_guild_name}] Discord client error checking for busier channel: {e}")
+        except Exception as e:
+            safe_guild_name = self._safe_guild_name(guild)
+            self.logger.error(f"[{safe_guild_name}] Unexpected error checking for busier channel: {e}")
 
     async def on_member_join(self, member: discord.Member) -> None:
         """
