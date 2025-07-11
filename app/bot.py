@@ -11,6 +11,13 @@ BOT_PREFIX = '!'
 LOGS_DIR = 'logs'
 LOG_DATE_FORMAT = '%Y%m%d'
 LOG_MESSAGE_FORMAT = '%(asctime)s | %(levelname)s | %(message)s'
+AUDIO_FILE_PATH = '/app/assets/notification.mp3'  # Path to your audio file
+
+# FFmpeg options for audio playback
+FFMPEG_OPTIONS = {
+    'before_options': '-nostdin',
+    'options': '-vn -filter:a "volume=0.5"'
+}
 
 # Embed colors
 EMBED_COLOR_SUCCESS = 0x00ff00
@@ -172,6 +179,19 @@ class BellboyBot(commands.Bot):
                 return
 
             await self._send_voice_status(ctx)
+
+        @self.command(name='test_audio')
+        async def test_audio_command(ctx: commands.Context) -> None:
+            """Test the notification audio."""
+            if not self._is_monitoring_guild(ctx.guild):
+                return
+
+            if not ctx.guild.voice_client or not ctx.guild.voice_client.is_connected():
+                await ctx.send("🤖 I need to be in a voice channel to test audio. Use `!join_busiest` first.")
+                return
+
+            await self._play_notification_audio(ctx.guild)
+            await ctx.send("🔊 Playing test notification audio!")
 
     async def _send_voice_status(self, ctx: commands.Context) -> None:
         """
@@ -471,6 +491,9 @@ class BellboyBot(commands.Bot):
             message = f"[{safe_guild_name}] {username} joined voice channel: {after.channel.name}"
             self.logger.info(message)
 
+            # Play notification audio
+            await self._play_notification_audio(member.guild)
+
             # Only try to join busiest channel when someone joins AND bot isn't already connected
             if config.auto_join_busiest and not member.guild.voice_client:
                 await self.join_busiest_channel_on_join(member.guild)
@@ -478,10 +501,16 @@ class BellboyBot(commands.Bot):
             elif config.auto_join_busiest and member.guild.voice_client:
                 await self._check_if_should_move_to_busier_channel(member.guild)
 
+            # Play notification audio
+            await self._play_notification_audio(member.guild)
+
         # User left a voice channel
         elif before.channel is not None and after.channel is None:
             message = f"[{safe_guild_name}] {username} left voice channel: {before.channel.name}"
             self.logger.info(message)
+
+            # Play notification audio
+            await self._play_notification_audio(member.guild)
 
             # Check if bot should leave if the channel became empty
             if config.auto_leave_empty:
@@ -490,10 +519,16 @@ class BellboyBot(commands.Bot):
             elif config.auto_join_busiest and member.guild.voice_client:
                 await self._check_if_should_move_to_busier_channel(member.guild)
 
+            # Play notification audio
+            await self._play_notification_audio(member.guild)
+
         # User moved between voice channels
         elif before.channel is not None and after.channel is not None and before.channel != after.channel:
             message = f"[{safe_guild_name}] {username} moved from {before.channel.name} to {after.channel.name}"
             self.logger.info(message)
+
+            # Play notification audio
+            await self._play_notification_audio(member.guild)
 
             # Check if bot should leave if the channel they left became empty
             if config.auto_leave_empty:
@@ -501,6 +536,9 @@ class BellboyBot(commands.Bot):
             # Check if we should move to a busier channel due to the population change
             elif config.auto_join_busiest and member.guild.voice_client:
                 await self._check_if_should_move_to_busier_channel(member.guild)
+
+            # Play notification audio
+            await self._play_notification_audio(member.guild)
 
     async def _check_if_should_move_to_busier_channel(self, guild: discord.Guild) -> None:
         """
@@ -576,6 +614,45 @@ class BellboyBot(commands.Bot):
         """
         self.logger.error(f'An error occurred in event {event}', exc_info=True)
 
+    async def _play_notification_audio(self, guild: discord.Guild) -> None:
+        """
+        Play notification audio in the voice channel if bot is connected.
+
+        Args:
+            guild: Discord guild where the bot should play audio
+        """
+        try:
+            # Check if bot is connected to a voice channel
+            if not guild.voice_client or not guild.voice_client.is_connected():
+                return
+
+            # Check if audio file exists
+            if not os.path.exists(AUDIO_FILE_PATH):
+                safe_guild_name = self._safe_guild_name(guild)
+                self.logger.warning(f"[{safe_guild_name}] Audio file not found: {AUDIO_FILE_PATH}")
+                return
+
+            # Don't interrupt if already playing audio
+            if guild.voice_client.is_playing():
+                return
+
+            # Create audio source and play
+            try:
+                audio_source = discord.FFmpegPCMAudio(AUDIO_FILE_PATH, **FFMPEG_OPTIONS)
+                guild.voice_client.play(audio_source, after=lambda e: self.logger.error(f'Audio player error: {e}') if e else None)
+
+                safe_guild_name = self._safe_guild_name(guild)
+                self.logger.debug(f"[{safe_guild_name}] Playing notification audio")
+            except discord.errors.ClientException as e:
+                safe_guild_name = self._safe_guild_name(guild)
+                self.logger.error(f"[{safe_guild_name}] Discord client error playing audio: {e}")
+            except Exception as e:
+                safe_guild_name = self._safe_guild_name(guild)
+                self.logger.error(f"[{safe_guild_name}] FFmpeg error playing audio: {e}")
+
+        except Exception as e:
+            safe_guild_name = self._safe_guild_name(guild)
+            self.logger.error(f"[{safe_guild_name}] Error playing notification audio: {e}")
 
 def main() -> None:
     """Main function to run the bot."""

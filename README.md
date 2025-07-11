@@ -8,6 +8,7 @@ A Discord bot that logs user activities including joining/leaving servers and vo
 - Logs when users join, leave, or move between voice channels
 - **Automatically joins the busiest voice channel** when voice activity changes
 - **Automatically leaves empty voice channels** when no users remain
+- **Plays notification audio** when users join, leave, or move between voice channels
 - Configurable through environment variables or `.env` file
 - Supports monitoring specific guilds or all guilds
 - Structured logging with file and console output
@@ -21,7 +22,12 @@ A Discord bot that logs user activities including joining/leaving servers and vo
 pip install -r requirements.txt
 ```
 
-**Note**: The bot requires PyNaCl for voice functionality. This will be installed automatically with the requirements.
+**Note**: The bot requires PyNaCl for voice functionality and FFmpeg for audio playback. PyNaCl will be installed automatically with the requirements.
+
+**FFmpeg Installation:**
+- **Windows**: Download from https://ffmpeg.org/download.html and add to PATH
+- **Linux**: `sudo apt install ffmpeg` (Ubuntu/Debian) or equivalent
+- **macOS**: `brew install ffmpeg` (with Homebrew)
 
 ### 2. Create a Discord Bot
 
@@ -59,7 +65,17 @@ Example invite URL:
 https://discord.com/api/oauth2/authorize?client_id=YOUR_BOT_CLIENT_ID&permissions=3145728&scope=bot
 ```
 
-### 5. Run the Bot
+### 5. Add Audio File (Optional)
+
+To enable notification sounds when users join/leave/move in voice channels:
+
+1. Add your audio file to `app/assets/notification.mp3`
+2. Recommended format: MP3, 1-3 seconds duration
+3. Test with the `!test_audio` command
+
+See `app/assets/README.md` for detailed audio specifications.
+
+### 6. Run the Bot
 
 ```bash
 python bot.py
@@ -72,6 +88,8 @@ The bot includes several commands for manual control:
 - `!join_busiest` - Manually make the bot join the busiest voice channel
 - `!leave_voice` - Make the bot leave the current voice channel
 - `!voice_status` - Show current voice channel status and bot configuration
+- `!check_busiest` - Check and display the busiest voice channel without joining
+- `!test_audio` - Test the notification audio (requires bot to be in voice channel)
 
 ## Voice Channel Behavior
 
@@ -82,8 +100,9 @@ The bot automatically:
    - Someone joins a voice channel AND
    - The bot is not already connected to a voice channel
 4. **Leaves when empty** - Automatically disconnects when all users leave the bot's current channel
-5. **Stays put otherwise** - Once connected, the bot remains in place unless the channel empties
-6. **Manual control** - Use commands to manually move or disconnect the bot
+5. **Plays notification audio** - Plays a sound when users join, leave, or move between channels (if audio file is configured)
+6. **Stays put otherwise** - Once connected, the bot remains in place unless the channel empties
+7. **Manual control** - Use commands to manually move or disconnect the bot
 
 This behavior prevents the bot from constantly moving between channels and only makes it join when there's new voice activity.
 
