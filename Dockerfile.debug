@@ -1,4 +1,4 @@
-# Use Python 3.11 instead of 3.12 for better compatibility
+# Use Python 3.11 for better compatibility
 FROM python:3.11-slim
 
 # Set environment variables
@@ -10,7 +10,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # Set work directory
 WORKDIR /app
 
-# Install system dependencies required for PyNaCl, discord.py, and Coqui TTS
+# Install system dependencies required for audio processing and compilation
 RUN apt-get update && apt-get install -y \
     gcc \
     g++ \
@@ -18,27 +18,30 @@ RUN apt-get update && apt-get install -y \
     libffi-dev \
     libsodium-dev \
     ffmpeg \
-    alsa-utils \
     libsndfile1 \
     libsndfile1-dev \
     build-essential \
     python3-dev \
-    git \
     pkg-config \
-    libssl-dev \
-    libavcodec-dev \
-    libavformat-dev \
-    libavdevice-dev \
-    libportaudio2 \
-    libportaudiocpp0 \
-    portaudio19-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements first to leverage Docker cache
+# Copy requirements file
 COPY requirements.txt .
 
-# Install all Python dependencies from requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt
+# Install dependencies step by step for better error tracking
+RUN pip install --upgrade pip
+
+# Install core Discord bot dependencies
+RUN pip install --no-cache-dir discord.py>=2.3.0,<3.0.0
+RUN pip install --no-cache-dir python-dotenv>=1.0.0,<2.0.0
+RUN pip install --no-cache-dir PyNaCl>=1.5.0,<2.0.0
+
+# Install audio processing dependencies
+RUN pip install --no-cache-dir numpy>=1.21.0
+RUN pip install --no-cache-dir soundfile>=0.12.1
+
+# Install Coqui TTS - this is the most likely to fail
+RUN pip install --no-cache-dir TTS==0.17.8
 
 # Copy application code
 COPY app/ .
@@ -53,9 +56,9 @@ RUN useradd --create-home --shell /bin/bash app && \
 # Switch to non-root user
 USER app
 
-# Health check to ensure the bot is running
+# Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python -c "import sys; sys.exit(0)" || exit 1
+    CMD python -c "import discord; import TTS; print('OK')" || exit 1
 
 # Command to run the application
 CMD ["python", "bellboy.py"]

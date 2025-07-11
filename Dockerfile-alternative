@@ -1,4 +1,4 @@
-# Use Python 3.11 instead of 3.12 for better compatibility
+# Use Python 3.11 instead of 3.12 for better TTS compatibility
 FROM python:3.11-slim
 
 # Set environment variables
@@ -18,6 +18,8 @@ RUN apt-get update && apt-get install -y \
     libffi-dev \
     libsodium-dev \
     ffmpeg \
+    espeak \
+    espeak-data \
     alsa-utils \
     libsndfile1 \
     libsndfile1-dev \
@@ -26,19 +28,28 @@ RUN apt-get update && apt-get install -y \
     git \
     pkg-config \
     libssl-dev \
-    libavcodec-dev \
-    libavformat-dev \
-    libavdevice-dev \
-    libportaudio2 \
-    libportaudiocpp0 \
-    portaudio19-dev \
+    wget \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements first to leverage Docker cache
+# Copy requirements files
+COPY requirements-basic.txt .
 COPY requirements.txt .
 
-# Install all Python dependencies from requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt
+# Install basic requirements first
+RUN pip install --no-cache-dir -r requirements-basic.txt
+
+# Try to install TTS, but don't fail if it doesn't work
+RUN pip install --no-cache-dir \
+    numpy>=1.21.0 \
+    torch>=1.13.0 \
+    torchaudio>=0.13.0 \
+    soundfile>=0.12.1 \
+    librosa>=0.9.0 \
+    || echo "Warning: Some audio dependencies failed to install"
+
+# Try to install TTS, but continue even if it fails
+RUN pip install --no-cache-dir TTS>=0.13.0 || echo "Warning: TTS installation failed, bot will run without TTS"
 
 # Copy application code
 COPY app/ .

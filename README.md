@@ -1,6 +1,6 @@
 # Discord Bellboy Bot
 
-A Discord bot that logs user activities including joining/leaving servers and voice channel movements.
+A Discord bot that monitors voice channel activity and provides intelligent TTS notifications using Coqui TTS.
 
 ## Features
 
@@ -8,11 +8,20 @@ A Discord bot that logs user activities including joining/leaving servers and vo
 - Logs when users join, leave, or move between voice channels
 - **Automatically joins the busiest voice channel** when voice activity changes
 - **Automatically leaves empty voice channels** when no users remain
-- **Plays notification audio** when users join, leave, or move between voice channels
+- **Plays TTS notifications** using Coqui TTS when users join, leave, or move between voice channels
+- **High-quality text-to-speech** with configurable voice models
+- **Smart TTS caching** to improve performance and manage disk space
 - Configurable through environment variables or `.env` file
 - Supports monitoring specific guilds or all guilds
 - Structured logging with file and console output
-- Manual commands to control bot behavior
+
+## TTS Features
+
+- **Coqui TTS Integration**: High-quality, open-source text-to-speech
+- **Multiple Voice Models**: Choose from fast, high-quality, and multi-speaker models
+- **Multi-language Support**: English, Spanish, French, German, and more
+- **Automatic Caching**: Smart cache management for generated TTS files
+- **Configurable Models**: Easy model switching via environment variables
 
 ## Setup
 
@@ -22,12 +31,21 @@ A Discord bot that logs user activities including joining/leaving servers and vo
 pip install -r requirements.txt
 ```
 
-**Note**: The bot requires PyNaCl for voice functionality and FFmpeg for audio playback. PyNaCl will be installed automatically with the requirements.
+**Note**: The bot requires PyNaCl for voice functionality, FFmpeg for audio processing, and Coqui TTS for text-to-speech generation.
 
-**FFmpeg Installation:**
-- **Windows**: Download from https://ffmpeg.org/download.html and add to PATH
-- **Linux**: `sudo apt install ffmpeg` (Ubuntu/Debian) or equivalent
-- **macOS**: `brew install ffmpeg` (with Homebrew)
+**System Dependencies:**
+- **FFmpeg**: For audio processing and conversion
+  - **Windows**: Download from https://ffmpeg.org/download.html and add to PATH
+  - **Linux**: `sudo apt install ffmpeg libsndfile1` (Ubuntu/Debian) or equivalent
+  - **macOS**: `brew install ffmpeg` (with Homebrew)
+
+**Python Dependencies:**
+- `discord.py`: Discord API wrapper
+- `python-dotenv`: Environment variable management
+- `PyNaCl`: Voice functionality
+- `TTS`: Coqui TTS for high-quality text-to-speech
+- `numpy`: Numerical computing for TTS
+- `soundfile`: Audio file I/O
 
 ### 2. Create a Discord Bot
 
@@ -41,13 +59,37 @@ pip install -r requirements.txt
 
 ### 3. Configure the Bot
 
-Copy the `.env.example` to `.env` and fill in your bot token:
+Copy the `.env.example` to `.env` and fill in your configuration:
 
 ```env
+# Discord Bot Configuration
 DISCORD_TOKEN=your_bot_token_here
 GUILD_ID=your_server_id_here  # Optional: leave empty to monitor all servers
 LOG_LEVEL=INFO
+
+# Coqui TTS Configuration
+TTS_MODEL=tts_models/en/ljspeech/fast_pitch  # Fast, good quality model
+TTS_CACHE_SIZE=50  # Number of TTS files to keep cached
 ```
+
+#### Available TTS Models
+
+**Fast Models (Recommended for real-time use):**
+- `tts_models/en/ljspeech/fast_pitch` - Default, fast and good quality
+- `tts_models/en/ljspeech/glow-tts` - Alternative fast model
+
+**High Quality Models (Slower):**
+- `tts_models/en/ljspeech/tacotron2-DDC` - Higher quality, slower
+- `tts_models/en/ljspeech/vits` - VITS model, very high quality
+
+**Multi-speaker Models:**
+- `tts_models/en/vctk/vits` - Multiple English voices
+- `tts_models/en/sam/tacotron-DDC` - Alternative multi-speaker
+
+**Other Languages:**
+- `tts_models/es/mai/tacotron2-DDC` - Spanish
+- `tts_models/fr/mai/tacotron2-DDC` - French
+- `tts_models/de/thorsten/tacotron2-DDC` - German
 
 ### 4. Invite the Bot to Your Server
 
@@ -75,11 +117,49 @@ To enable notification sounds when users join/leave/move in voice channels:
 
 See `app/assets/README.md` for detailed audio specifications.
 
-### 6. Run the Bot
+### 6. Test TTS Functionality (Optional)
+
+Before running the bot, you can test if Coqui TTS is working correctly:
+
+```bash
+python test_coqui_tts.py
+```
+
+This will:
+- Initialize the TTS model
+- Generate a test audio file
+- List available TTS models
+- Verify the installation is working correctly
+
+If the test fails, check that:
+- All system dependencies (FFmpeg, libsndfile1) are installed
+- The TTS model name in your `.env` file is correct
+- You have sufficient disk space for model downloads
+
+### 7. Run the Bot
 
 ```bash
 python bot.py
 ```
+
+### 8. Docker Setup (Alternative)
+
+```bash
+# Build the Docker image
+docker build -t discord-bellboy-bot .
+
+# Run the container with environment file
+docker run -d --name bellboy-bot --env-file .env discord-bellboy-bot
+
+# Or run with environment variables directly
+docker run -d --name bellboy-bot \
+  -e DISCORD_TOKEN=your_token_here \
+  -e GUILD_ID=your_guild_id \
+  -e TTS_MODEL=tts_models/en/ljspeech/fast_pitch \
+  discord-bellboy-bot
+```
+
+**Note**: The bot will automatically detect if TTS is available and gracefully disable TTS features if the installation fails during the Docker build.
 
 ## Bot Commands
 
