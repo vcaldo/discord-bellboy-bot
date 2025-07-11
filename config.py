@@ -14,6 +14,7 @@ class Config:
         self._guild_id: Optional[int] = None
         self._log_level: str = "INFO"
         self._auto_join_busiest: bool = True
+        self._auto_leave_empty: bool = True
 
         self._load_config()
 
@@ -40,6 +41,10 @@ class Config:
         auto_join_str = os.getenv('AUTO_JOIN_BUSIEST', 'true').lower()
         self._auto_join_busiest = auto_join_str in ['true', '1', 'yes', 'on']
 
+        # Auto leave empty channel (optional, defaults to True)
+        auto_leave_str = os.getenv('AUTO_LEAVE_EMPTY', 'true').lower()
+        self._auto_leave_empty = auto_leave_str in ['true', '1', 'yes', 'on']
+
     @property
     def discord_token(self) -> str:
         """Get Discord bot token."""
@@ -61,6 +66,11 @@ class Config:
     def auto_join_busiest(self) -> bool:
         """Get auto join busiest channel setting."""
         return self._auto_join_busiest
+
+    @property
+    def auto_leave_empty(self) -> bool:
+        """Get auto leave empty channel setting."""
+        return self._auto_leave_empty
 
     def validate(self) -> bool:
         """Validate that all required configuration is present."""

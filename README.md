@@ -7,6 +7,7 @@ A Discord bot that logs user activities including joining/leaving servers and vo
 - Logs when users join or leave the Discord server
 - Logs when users join, leave, or move between voice channels
 - **Automatically joins the busiest voice channel** when voice activity changes
+- **Automatically leaves empty voice channels** when no users remain
 - Configurable through environment variables or `.env` file
 - Supports monitoring specific guilds or all guilds
 - Structured logging with file and console output
@@ -80,12 +81,15 @@ The bot automatically:
 3. **Joins strategically** - Connects to the busiest channel only when:
    - Someone joins a voice channel AND
    - The bot is not already connected to a voice channel
-4. **Stays put** - Once connected, the bot remains in its channel (doesn't move around)
-5. **Manual control** - Use commands to manually move or disconnect the bot
+4. **Leaves when empty** - Automatically disconnects when all users leave the bot's current channel
+5. **Stays put otherwise** - Once connected, the bot remains in place unless the channel empties
+6. **Manual control** - Use commands to manually move or disconnect the bot
 
 This behavior prevents the bot from constantly moving between channels and only makes it join when there's new voice activity.
 
-**Note**: This can be disabled by setting `AUTO_JOIN_BUSIEST=false` in your `.env` file.
+**Note**: Both behaviors can be controlled via `.env` settings:
+- `AUTO_JOIN_BUSIEST=false` - Disable automatic joining
+- `AUTO_LEAVE_EMPTY=false` - Disable automatic leaving
 
 ## Configuration
 
@@ -95,6 +99,7 @@ The bot reads configuration from environment variables or a `.env` file:
 - `GUILD_ID` (optional): Specific Discord server ID to monitor. Leave empty to monitor all servers
 - `LOG_LEVEL` (optional): Logging level (DEBUG, INFO, WARNING, ERROR). Defaults to INFO
 - `AUTO_JOIN_BUSIEST` (optional): Whether bot should automatically join the busiest voice channel (true/false). Defaults to true
+- `AUTO_LEAVE_EMPTY` (optional): Whether bot should automatically leave empty voice channels (true/false). Defaults to true
 
 ## Logs
 

@@ -100,6 +100,12 @@ class BellboyBot(commands.Bot):
                 inline=False
             )
 
+            embed.add_field(
+                name="Auto Leave Empty",
+                value="✅ Enabled" if config.auto_leave_empty else "❌ Disabled",
+                inline=False
+            )
+
             await ctx.send(embed=embed)
 
     def _setup_logging(self):
@@ -167,16 +173,16 @@ class BellboyBot(commands.Bot):
             # Only proceed if bot is not already connected
             if guild.voice_client and guild.voice_client.is_connected():
                 return
-            
+
             # Find the busiest channel
             busiest_channel, max_members = await self.find_busiest_voice_channel(guild)
-            
+
             # Only join if there are members in the channel
             if busiest_channel and max_members > 0:
                 await busiest_channel.connect()
                 safe_guild_name = self._safe_guild_name(guild)
                 self.logger.info(f"[{safe_guild_name}] Bot joined busiest channel: {busiest_channel.name} ({max_members} members)")
-                
+
         except discord.ClientException as e:
             safe_guild_name = self._safe_guild_name(guild)
             self.logger.error(f"[{safe_guild_name}] Error joining voice channel on user join: {e}")
@@ -225,6 +231,28 @@ class BellboyBot(commands.Bot):
             safe_guild_name = self._safe_guild_name(guild)
             self.logger.error(f"[{safe_guild_name}] Unexpected error in join_busiest_channel: {e}")
 
+    async def check_and_leave_if_empty(self, guild):
+        """Check if the bot's current voice channel is empty and leave if so."""
+        try:
+            # Check if bot is connected to a voice channel
+            if not guild.voice_client or not guild.voice_client.is_connected():
+                return
+
+            current_channel = guild.voice_client.channel
+
+            # Count non-bot members in the channel
+            human_members = [member for member in current_channel.members if not member.bot]
+
+            # If no human members, disconnect
+            if len(human_members) == 0:
+                await guild.voice_client.disconnect()
+                safe_guild_name = self._safe_guild_name(guild)
+                self.logger.info(f"[{safe_guild_name}] Bot left voice channel '{current_channel.name}' - no members remaining")
+
+        except Exception as e:
+            safe_guild_name = self._safe_guild_name(guild)
+            self.logger.error(f"[{safe_guild_name}] Error checking empty channel: {e}")
+
     async def on_voice_state_update(self, member, before, after):
         """Called when a user's voice state changes."""
         # Skip if monitoring specific guild and this isn't it
@@ -238,7 +266,7 @@ class BellboyBot(commands.Bot):
         if before.channel is None and after.channel is not None:
             message = f"[{safe_guild_name}] {username} joined voice channel: {after.channel.name}"
             self.logger.info(message)
-            
+
             # Only try to join busiest channel when someone joins AND bot isn't already connected
             if config.auto_join_busiest and not member.guild.voice_client:
                 await self.join_busiest_channel_on_join(member.guild)
@@ -248,10 +276,18 @@ class BellboyBot(commands.Bot):
             message = f"[{safe_guild_name}] {username} left voice channel: {before.channel.name}"
             self.logger.info(message)
 
+            # Check if bot should leave if the channel became empty
+            if config.auto_leave_empty:
+                await self.check_and_leave_if_empty(member.guild)
+
         # User moved between voice channels
         elif before.channel is not None and after.channel is not None and before.channel != after.channel:
             message = f"[{safe_guild_name}] {username} moved from {before.channel.name} to {after.channel.name}"
             self.logger.info(message)
+
+            # Check if bot should leave if the channel they left became empty
+            if config.auto_leave_empty:
+                await self.check_and_leave_if_empty(member.guild)
 
     async def on_member_join(self, member):
         """Called when a member joins the server."""
