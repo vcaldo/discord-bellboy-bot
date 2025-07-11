@@ -220,7 +220,7 @@ class BellboyBot(discord.Client):
 
     async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
         """Called when a user's voice state changes."""
-        # Skip if not monitoring this guild or if it's a bot
+        # Skip if it's a bot
         if not self._is_monitoring_guild(member.guild) or member.bot:
             return
 
