@@ -238,14 +238,14 @@ class BellboyBot(discord.Client):
         elif before.channel is not None and after.channel is None:
             self.logger.info(f"[{safe_guild_name}] {username} left voice channel: {before.channel.name}")
             await self.play_notification_audio(AUDIO_FILE_PATH, guild)
-            await self.leave_if_empty(guild)
+            # await self.leave_if_empty(guild)
 
         # User moved between voice channels
         elif before.channel is not None and after.channel is not None and before.channel != after.channel:
             self.logger.info(f"[{safe_guild_name}] {username} moved from {before.channel.name} to {after.channel.name}")
             await self.play_notification_audio(AUDIO_FILE_PATH, guild)
             await self.join_busiest_channel_if_needed(guild)
-            await self.leave_if_empty(guild)
+            # await self.leave_if_empty(guild)
 
     async def on_error(self, event, *args, **kwargs):
         """Called when an error occurs."""
