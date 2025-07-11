@@ -10,12 +10,15 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # Set work directory
 WORKDIR /app
 
-# Install system dependencies required for PyNaCl and discord.py
+# Install system dependencies required for PyNaCl, discord.py, and TTS
 RUN apt-get update && apt-get install -y \
     gcc \
     libffi-dev \
     libsodium-dev \
     ffmpeg \
+    espeak \
+    espeak-data \
+    alsa-utils \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first to leverage Docker cache

@@ -1,6 +1,8 @@
 import discord
 import logging
 import os
+import subprocess
+import tempfile
 from datetime import datetime
 from typing import Optional, Tuple
 from dotenv import load_dotenv
@@ -99,6 +101,109 @@ class BellboyBot(discord.Client):
             except ValueError:
                 return True
         return True
+
+    def create_tts_mp3(self, text: str, output_path: str, voice: str = "en", speed: int = 150, pitch: int = 50) -> bool:
+        """
+        Create an MP3 file from text using espeak TTS.
+
+        Args:
+            text: The text to convert to speech
+            output_path: Path where the MP3 file will be saved
+            voice: Voice/language code (e.g., 'en', 'es', 'fr', 'de')
+            speed: Speech speed in words per minute (default: 150)
+            pitch: Voice pitch from 0-99 (default: 50)
+
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        try:
+            # Ensure the output directory exists
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+            # Create a temporary WAV file first (espeak doesn't directly output MP3)
+            with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_wav:
+                temp_wav_path = temp_wav.name
+
+            # Use espeak to create WAV file
+            espeak_cmd = [
+                'espeak',
+                '-v', voice,
+                '-s', str(speed),
+                '-p', str(pitch),
+                '-w', temp_wav_path,
+                text
+            ]
+
+            # Run espeak command
+            result = subprocess.run(espeak_cmd, capture_output=True, text=True, timeout=30)
+
+            if result.returncode != 0:
+                self.logger.error(f"espeak failed: {result.stderr}")
+                return False
+
+            # Convert WAV to MP3 using ffmpeg
+            ffmpeg_cmd = [
+                'ffmpeg',
+                '-y',  # Overwrite output file
+                '-i', temp_wav_path,
+                '-codec:a', 'mp3',
+                '-b:a', '128k',
+                output_path
+            ]
+
+            result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True, timeout=30)
+
+            if result.returncode != 0:
+                self.logger.error(f"ffmpeg conversion failed: {result.stderr}")
+                return False
+
+            # Clean up temporary WAV file
+            try:
+                os.unlink(temp_wav_path)
+            except OSError:
+                pass
+
+            self.logger.info(f"TTS MP3 created successfully: {output_path}")
+            return True
+
+        except subprocess.TimeoutExpired:
+            self.logger.error("TTS generation timed out")
+            return False
+        except Exception as e:
+            self.logger.error(f"Error creating TTS MP3: {e}")
+            return False
+
+    async def create_and_play_tts(self, text: str, guild: discord.Guild, voice: str = "en") -> None:
+        """
+        Create a TTS MP3 from text and play it in the current voice channel.
+
+        Args:
+            text: The text to convert to speech and play
+            guild: Discord guild where the audio should be played
+            voice: Voice/language code for TTS
+        """
+        try:
+            # Generate a unique filename for the TTS audio
+            import hashlib
+            text_hash = hashlib.md5(text.encode()).hexdigest()[:8]
+            tts_filename = f"tts_{text_hash}.mp3"
+            tts_path = f"/app/assets/{tts_filename}"
+
+            # Create the TTS MP3 file
+            if self.create_tts_mp3(text, tts_path, voice):
+                # Play the generated TTS audio
+                await self.play_notification_audio(tts_path, guild)
+
+                # Optional: Clean up the TTS file after a delay to save space
+                # You might want to keep frequently used TTS files cached
+
+            else:
+                safe_guild_name = self._safe_guild_name(guild)
+                self.logger.error(f"[{safe_guild_name}] Failed to create TTS for: {text}")
+
+        except Exception as e:
+            safe_guild_name = self._safe_guild_name(guild)
+            self.logger.error(f"[{safe_guild_name}] Error in create_and_play_tts: {e}")
 
     async def find_busiest_voice_channel(self, guild: discord.Guild) -> Tuple[Optional[discord.VoiceChannel], int]:
         """
@@ -231,19 +336,33 @@ class BellboyBot(discord.Client):
         # User joined a voice channel
         if before.channel is None and after.channel is not None:
             self.logger.info(f"[{safe_guild_name}] {username} joined voice channel: {after.channel.name}")
-            await self.play_notification_audio(AUDIO_FILE_PATH, guild)
+            # Generate TTS audio for user joining
+            join_message = f"{member.display_name} joined"
+            tts_audio_path = f"/app/assets/tts_join_{member.id}.mp3"
+            if self.create_tts_mp3(join_message, tts_audio_path):
+                await self.play_notification_audio(tts_audio_path, guild)
+            await self.play_notification_audio(tts_audio_path, guild)
             await self.join_busiest_channel_if_needed(guild)
 
         # User left a voice channel
         elif before.channel is not None and after.channel is None:
             self.logger.info(f"[{safe_guild_name}] {username} left voice channel: {before.channel.name}")
-            await self.play_notification_audio(AUDIO_FILE_PATH, guild)
+            # Generate TTS audio for user left
+            left_message = f"{member.display_name} left"
+            tts_audio_path = f"/app/assets/tts_left_{member.id}.mp3"
+            if self.create_tts_mp3(left_message, tts_audio_path):
+                await self.play_notification_audio(tts_audio_path, guild)
+            await self.play_notification_audio(tts_audio_path, guild)
             # await self.leave_if_empty(guild)
 
         # User moved between voice channels
         elif before.channel is not None and after.channel is not None and before.channel != after.channel:
             self.logger.info(f"[{safe_guild_name}] {username} moved from {before.channel.name} to {after.channel.name}")
-            await self.play_notification_audio(AUDIO_FILE_PATH, guild)
+            move_message = f"{member.display_name} moved"
+            tts_audio_path = f"/app/assets/tts_moved_{member.id}.mp3"
+            if self.create_tts_mp3(move_message, tts_audio_path):
+                await self.play_notification_audio(tts_audio_path, guild)
+            await self.play_notification_audio(tts_audio_path, guild)
             await self.join_busiest_channel_if_needed(guild)
             # await self.leave_if_empty(guild)
 
