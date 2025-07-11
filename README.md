@@ -6,9 +6,11 @@ A Discord bot that logs user activities including joining/leaving servers and vo
 
 - Logs when users join or leave the Discord server
 - Logs when users join, leave, or move between voice channels
+- **Automatically joins the busiest voice channel** when voice activity changes
 - Configurable through environment variables or `.env` file
 - Supports monitoring specific guilds or all guilds
 - Structured logging with file and console output
+- Manual commands to control bot behavior
 
 ## Setup
 
@@ -17,6 +19,8 @@ A Discord bot that logs user activities including joining/leaving servers and vo
 ```bash
 pip install -r requirements.txt
 ```
+
+**Note**: The bot requires PyNaCl for voice functionality. This will be installed automatically with the requirements.
 
 ### 2. Create a Discord Bot
 
@@ -44,8 +48,10 @@ Create an invite link with the following permissions:
 - View Channels
 - Connect (for voice channel monitoring)
 - Use Voice Activity (for voice channel monitoring)
+- Send Messages (for bot commands)
+- Use Slash Commands (for bot commands)
 
-Bot permissions integer: `3145728`
+Bot permissions integer: `3146752`
 
 Example invite URL:
 ```
@@ -58,6 +64,29 @@ https://discord.com/api/oauth2/authorize?client_id=YOUR_BOT_CLIENT_ID&permission
 python bot.py
 ```
 
+## Bot Commands
+
+The bot includes several commands for manual control:
+
+- `!join_busiest` - Manually make the bot join the busiest voice channel
+- `!leave_voice` - Make the bot leave the current voice channel
+- `!voice_status` - Show current voice channel status and bot configuration
+
+## Voice Channel Behavior
+
+The bot automatically:
+1. **Monitors voice activity** - Tracks when users join, leave, or move between channels
+2. **Finds the busiest channel** - Counts active members (excluding bots) in each voice channel
+3. **Joins strategically** - Connects to the busiest channel only when:
+   - Someone joins a voice channel AND
+   - The bot is not already connected to a voice channel
+4. **Stays put** - Once connected, the bot remains in its channel (doesn't move around)
+5. **Manual control** - Use commands to manually move or disconnect the bot
+
+This behavior prevents the bot from constantly moving between channels and only makes it join when there's new voice activity.
+
+**Note**: This can be disabled by setting `AUTO_JOIN_BUSIEST=false` in your `.env` file.
+
 ## Configuration
 
 The bot reads configuration from environment variables or a `.env` file:
@@ -65,6 +94,7 @@ The bot reads configuration from environment variables or a `.env` file:
 - `DISCORD_TOKEN` (required): Your Discord bot token
 - `GUILD_ID` (optional): Specific Discord server ID to monitor. Leave empty to monitor all servers
 - `LOG_LEVEL` (optional): Logging level (DEBUG, INFO, WARNING, ERROR). Defaults to INFO
+- `AUTO_JOIN_BUSIEST` (optional): Whether bot should automatically join the busiest voice channel (true/false). Defaults to true
 
 ## Logs
 

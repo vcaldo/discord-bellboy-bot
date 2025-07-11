@@ -13,6 +13,7 @@ class Config:
         self._discord_token: Optional[str] = None
         self._guild_id: Optional[int] = None
         self._log_level: str = "INFO"
+        self._auto_join_busiest: bool = True
 
         self._load_config()
 
@@ -35,6 +36,10 @@ class Config:
             print(f"Warning: Invalid LOG_LEVEL '{self._log_level}'. Using INFO.")
             self._log_level = 'INFO'
 
+        # Auto join busiest channel (optional, defaults to True)
+        auto_join_str = os.getenv('AUTO_JOIN_BUSIEST', 'true').lower()
+        self._auto_join_busiest = auto_join_str in ['true', '1', 'yes', 'on']
+
     @property
     def discord_token(self) -> str:
         """Get Discord bot token."""
@@ -51,6 +56,11 @@ class Config:
     def log_level(self) -> str:
         """Get log level."""
         return self._log_level
+
+    @property
+    def auto_join_busiest(self) -> bool:
+        """Get auto join busiest channel setting."""
+        return self._auto_join_busiest
 
     def validate(self) -> bool:
         """Validate that all required configuration is present."""
