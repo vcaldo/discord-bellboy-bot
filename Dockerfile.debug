@@ -1,0 +1,64 @@
+# Use Python 3.11 for better compatibility
+FROM python:3.11-slim
+
+# Set environment variables
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+# Set work directory
+WORKDIR /app
+
+# Install system dependencies required for audio processing and compilation
+RUN apt-get update && apt-get install -y \
+    gcc \
+    g++ \
+    make \
+    libffi-dev \
+    libsodium-dev \
+    ffmpeg \
+    libsndfile1 \
+    libsndfile1-dev \
+    build-essential \
+    python3-dev \
+    pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements file
+COPY requirements.txt .
+
+# Install dependencies step by step for better error tracking
+RUN pip install --upgrade pip
+
+# Install core Discord bot dependencies
+RUN pip install --no-cache-dir discord.py>=2.3.0,<3.0.0
+RUN pip install --no-cache-dir python-dotenv>=1.0.0,<2.0.0
+RUN pip install --no-cache-dir PyNaCl>=1.5.0,<2.0.0
+
+# Install audio processing dependencies
+RUN pip install --no-cache-dir numpy>=1.21.0
+RUN pip install --no-cache-dir soundfile>=0.12.1
+
+# Install Coqui TTS - this is the most likely to fail
+RUN pip install --no-cache-dir TTS==0.17.8
+
+# Copy application code
+COPY app/ .
+
+# Create logs directory
+RUN mkdir -p logs
+
+# Create a non-root user for security
+RUN useradd --create-home --shell /bin/bash app && \
+    chown -R app:app /app
+
+# Switch to non-root user
+USER app
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD python -c "import discord; import TTS; print('OK')" || exit 1
+
+# Command to run the application
+CMD ["python", "bellboy.py"]

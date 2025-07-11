@@ -1,0 +1,41 @@
+version: '3.8'
+
+services:
+  discord-bellboy-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: bellboy-bot
+    restart: unless-stopped
+    environment:
+      # Discord bot configuration
+      - DISCORD_TOKEN=${DISCORD_TOKEN}
+      - GUILD_ID=${GUILD_ID:-}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - AUTO_JOIN_BUSIEST=${AUTO_JOIN_BUSIEST:-true}
+      - AUTO_LEAVE_EMPTY=${AUTO_LEAVE_EMPTY:-true}
+    volumes:
+      # Mount logs directory to persist logs on the host
+      - ./logs:/app/logs
+      # Mount .env file if it exists (optional)
+      - ./.env:/app/.env:ro
+    networks:
+      - bellboy-network
+    # Add resource limits for better resource management
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 128M
+          cpus: '0.1'
+
+networks:
+  bellboy-network:
+    driver: bridge
+
+# Optional: Add a volume for persistent log storage
+volumes:
+  logs:
+    driver: local
