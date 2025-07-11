@@ -1,35 +1,63 @@
 import discord
 from discord.ext import commands
 import logging
+import os
 from datetime import datetime
+from typing import Optional, Tuple, List
 from config import config
+
+# Constants
+BOT_PREFIX = '!'
+LOGS_DIR = 'logs'
+LOG_DATE_FORMAT = '%Y%m%d'
+LOG_MESSAGE_FORMAT = '%(asctime)s | %(levelname)s | %(message)s'
+
+# Embed colors
+EMBED_COLOR_SUCCESS = 0x00ff00
+EMBED_COLOR_WARNING = 0xffa500
+EMBED_COLOR_ERROR = 0xff0000
 
 
 class BellboyBot(commands.Bot):
-    """Discord bot that logs user voice channel activities."""
+    """
+    Discord bot that logs user voice channel activities and manages voice presence.
 
-    def __init__(self):
+    Features:
+    - Automatically joins the busiest voice channel
+    - Leaves empty voice channels
+    - Logs voice state changes and member activities
+    - Provides voice status commands
+    """
+
+    def __init__(self) -> None:
         # Set up intents
         intents = discord.Intents.default()
         intents.voice_states = True  # Required for voice channel events
         intents.members = True       # Required for member events
 
         super().__init__(
-            command_prefix='!',
+            command_prefix=BOT_PREFIX,
             intents=intents,
             help_command=None
         )
 
         # Set up logging
         self._setup_logging()
-
         self.logger = logging.getLogger('bellboy')
 
         # Add commands
-        self.add_commands()
+        self._add_commands()
 
-    def _safe_guild_name(self, guild):
-        """Get a safe representation of guild name for logging."""
+    def _safe_guild_name(self, guild: discord.Guild) -> str:
+        """
+        Get a safe representation of guild name for logging.
+
+        Args:
+            guild: Discord guild object
+
+        Returns:
+            Safe string representation of guild name
+        """
         try:
             return guild.name
         except UnicodeEncodeError:
@@ -38,22 +66,61 @@ class BellboyBot(commands.Bot):
         except Exception:
             return f"Guild_{guild.id}"
 
-    def add_commands(self):
+    def _format_member_info(self, member: discord.Member) -> str:
+        """
+        Format member information for logging.
+
+        Args:
+            member: Discord member object
+
+        Returns:
+            Formatted member information string
+        """
+        try:
+            return f"{member.display_name} ({member.name}#{member.discriminator})"
+        except Exception:
+            return f"Member_{member.id}"
+
+    def _count_human_members(self, channel: discord.VoiceChannel) -> int:
+        """
+        Count non-bot members in a voice channel.
+
+        Args:
+            channel: Discord voice channel
+
+        Returns:
+            Number of human members in the channel
+        """
+        return len([member for member in channel.members if not member.bot])
+
+    def _is_monitoring_guild(self, guild: discord.Guild) -> bool:
+        """
+        Check if the bot should monitor this guild.
+
+        Args:
+            guild: Discord guild to check
+
+        Returns:
+            True if guild should be monitored, False otherwise
+        """
+        return config.guild_id is None or guild.id == config.guild_id
+
+    def _add_commands(self) -> None:
         """Add bot commands."""
 
         @self.command(name='join_busiest')
-        async def join_busiest_command(ctx):
+        async def join_busiest_command(ctx: commands.Context) -> None:
             """Manually make the bot join the busiest voice channel."""
-            if config.guild_id and ctx.guild.id != config.guild_id:
+            if not self._is_monitoring_guild(ctx.guild):
                 return
 
             await self.join_busiest_channel(ctx.guild)
             await ctx.send("🤖 Checking for busiest voice channel...")
 
         @self.command(name='leave_voice')
-        async def leave_voice_command(ctx):
+        async def leave_voice_command(ctx: commands.Context) -> None:
             """Make the bot leave the current voice channel."""
-            if config.guild_id and ctx.guild.id != config.guild_id:
+            if not self._is_monitoring_guild(ctx.guild):
                 return
 
             if ctx.guild.voice_client:
@@ -65,18 +132,29 @@ class BellboyBot(commands.Bot):
                 await ctx.send("🤷 I'm not in a voice channel!")
 
         @self.command(name='voice_status')
-        async def voice_status_command(ctx):
+        async def voice_status_command(ctx: commands.Context) -> None:
             """Show current voice channel status."""
-            if config.guild_id and ctx.guild.id != config.guild_id:
+            if not self._is_monitoring_guild(ctx.guild):
                 return
 
+            await self._send_voice_status(ctx)
+
+    async def _send_voice_status(self, ctx: commands.Context) -> None:
+        """
+        Send voice status embed to the context channel.
+
+        Args:
+            ctx: Command context
+        """
+        try:
             busiest_channel, max_members = await self.find_busiest_voice_channel(ctx.guild)
 
-            embed = discord.Embed(title="🎵 Voice Channel Status", color=0x00ff00)
+            embed = discord.Embed(title="🎵 Voice Channel Status", color=EMBED_COLOR_SUCCESS)
 
+            # Current channel info
             if ctx.guild.voice_client and ctx.guild.voice_client.is_connected():
                 current_channel = ctx.guild.voice_client.channel
-                current_members = len([member for member in current_channel.members if not member.bot])
+                current_members = self._count_human_members(current_channel)
                 embed.add_field(
                     name="Current Channel",
                     value=f"{current_channel.name} ({current_members} members)",
@@ -85,6 +163,7 @@ class BellboyBot(commands.Bot):
             else:
                 embed.add_field(name="Current Channel", value="Not connected", inline=False)
 
+            # Busiest channel info
             if busiest_channel:
                 embed.add_field(
                     name="Busiest Channel",
@@ -94,6 +173,7 @@ class BellboyBot(commands.Bot):
             else:
                 embed.add_field(name="Busiest Channel", value="No active channels", inline=False)
 
+            # Configuration status
             embed.add_field(
                 name="Auto Join",
                 value="✅ Enabled" if config.auto_join_busiest else "❌ Disabled",
@@ -108,37 +188,46 @@ class BellboyBot(commands.Bot):
 
             await ctx.send(embed=embed)
 
-    def _setup_logging(self):
-        """Set up logging configuration."""
-        # Create logs directory if it doesn't exist
-        import os
-        if not os.path.exists('logs'):
-            os.makedirs('logs')
+        except Exception as e:
+            safe_guild_name = self._safe_guild_name(ctx.guild)
+            self.logger.error(f"[{safe_guild_name}] Error sending voice status: {e}")
+            await ctx.send("❌ Error retrieving voice status. Please try again later.")
 
-        # Configure logging with UTF-8 encoding to handle Unicode characters
-        logging.basicConfig(
-            level=getattr(logging, config.log_level),
-            format='%(asctime)s | %(levelname)s | %(message)s',
-            handlers=[
-                logging.FileHandler(
-                    f'logs/bellboy_{datetime.now().strftime("%Y%m%d")}.log',
-                    encoding='utf-8'
-                ),
-                logging.StreamHandler()
-            ]
-        )
+    def _setup_logging(self) -> None:
+        """Set up logging configuration with proper encoding and error handling."""
+        try:
+            # Create logs directory if it doesn't exist
+            if not os.path.exists(LOGS_DIR):
+                os.makedirs(LOGS_DIR)
 
-        # Set encoding for console handler to handle Unicode
-        console_handler = logging.getLogger().handlers[-1]
-        if hasattr(console_handler, 'stream'):
-            try:
-                console_handler.stream.reconfigure(encoding='utf-8', errors='replace')
-            except AttributeError:
-                # Fallback for older Python versions
-                pass
+            log_filename = f'{LOGS_DIR}/bellboy_{datetime.now().strftime(LOG_DATE_FORMAT)}.log'
 
-    async def on_ready(self):
-        """Called when the bot is ready."""
+            # Configure logging with UTF-8 encoding to handle Unicode characters
+            logging.basicConfig(
+                level=getattr(logging, config.log_level),
+                format=LOG_MESSAGE_FORMAT,
+                handlers=[
+                    logging.FileHandler(log_filename, encoding='utf-8'),
+                    logging.StreamHandler()
+                ]
+            )
+
+            # Set encoding for console handler to handle Unicode
+            console_handler = logging.getLogger().handlers[-1]
+            if hasattr(console_handler, 'stream'):
+                try:
+                    console_handler.stream.reconfigure(encoding='utf-8', errors='replace')
+                except AttributeError:
+                    # Fallback for older Python versions
+                    pass
+
+        except Exception as e:
+            print(f"Warning: Error setting up logging: {e}")
+            # Fallback to basic logging
+            logging.basicConfig(level=logging.INFO)
+
+    async def on_ready(self) -> None:
+        """Called when the bot is ready and connected to Discord."""
         self.logger.info(f'{self.user} has connected to Discord!')
         self.logger.info(f'Bot is in {len(self.guilds)} guilds')
 
@@ -152,14 +241,23 @@ class BellboyBot(commands.Bot):
         else:
             self.logger.info('Monitoring all guilds')
 
-    async def find_busiest_voice_channel(self, guild):
-        """Find the voice channel with the most members."""
+    async def find_busiest_voice_channel(self, guild: discord.Guild) -> Tuple[Optional[discord.VoiceChannel], int]:
+        """
+        Find the voice channel with the most human members.
+
+        Args:
+            guild: Discord guild to search in
+
+        Returns:
+            Tuple of (busiest_channel, member_count).
+            Returns (None, 0) if no channels have members.
+        """
         busiest_channel = None
         max_members = 0
 
         for channel in guild.voice_channels:
-            # Count members in the channel (excluding bots if desired)
-            member_count = len([member for member in channel.members if not member.bot])
+            # Count human members in the channel
+            member_count = self._count_human_members(channel)
 
             if member_count > max_members:
                 max_members = member_count
@@ -167,8 +265,13 @@ class BellboyBot(commands.Bot):
 
         return busiest_channel, max_members
 
-    async def join_busiest_channel_on_join(self, guild):
-        """Join the busiest voice channel when someone joins a channel (bot not connected)."""
+    async def join_busiest_channel_on_join(self, guild: discord.Guild) -> None:
+        """
+        Join the busiest voice channel when someone joins a channel (bot not connected).
+
+        Args:
+            guild: Discord guild where the event occurred
+        """
         try:
             # Only proceed if bot is not already connected
             if guild.voice_client and guild.voice_client.is_connected():
@@ -185,29 +288,22 @@ class BellboyBot(commands.Bot):
 
         except discord.ClientException as e:
             safe_guild_name = self._safe_guild_name(guild)
-            self.logger.error(f"[{safe_guild_name}] Error joining voice channel on user join: {e}")
+            self.logger.error(f"[{safe_guild_name}] Discord client error joining voice channel on user join: {e}")
         except Exception as e:
             safe_guild_name = self._safe_guild_name(guild)
             self.logger.error(f"[{safe_guild_name}] Unexpected error in join_busiest_channel_on_join: {e}")
 
-    async def join_busiest_channel(self, guild):
-        """Join the busiest voice channel in the guild."""
+    async def join_busiest_channel(self, guild: discord.Guild) -> None:
+        """
+        Join the busiest voice channel in the guild.
+
+        Args:
+            guild: Discord guild to find busiest channel in
+        """
         try:
-            # Skip if the bot is already connected to a voice channel in this guild
+            # If bot is already connected, check if we should move
             if guild.voice_client and guild.voice_client.is_connected():
-                current_channel = guild.voice_client.channel
-                current_members = len([member for member in current_channel.members if not member.bot])
-
-                # Find the busiest channel
-                busiest_channel, max_members = await self.find_busiest_voice_channel(guild)
-
-                # If the current channel is still the busiest or tied for busiest, stay
-                if not busiest_channel or current_members >= max_members:
-                    return                # If there's a busier channel, move to it
-                if max_members > current_members:
-                    await guild.voice_client.move_to(busiest_channel)
-                    safe_guild_name = self._safe_guild_name(guild)
-                    self.logger.info(f"[{safe_guild_name}] Bot moved to busier channel: {busiest_channel.name} ({max_members} members)")
+                await self._handle_already_connected(guild)
                 return
 
             # Find the busiest channel
@@ -226,13 +322,41 @@ class BellboyBot(commands.Bot):
 
         except discord.ClientException as e:
             safe_guild_name = self._safe_guild_name(guild)
-            self.logger.error(f"[{safe_guild_name}] Error joining voice channel: {e}")
+            self.logger.error(f"[{safe_guild_name}] Discord client error joining voice channel: {e}")
         except Exception as e:
             safe_guild_name = self._safe_guild_name(guild)
             self.logger.error(f"[{safe_guild_name}] Unexpected error in join_busiest_channel: {e}")
 
-    async def check_and_leave_if_empty(self, guild):
-        """Check if the bot's current voice channel is empty and leave if so."""
+    async def _handle_already_connected(self, guild: discord.Guild) -> None:
+        """
+        Handle logic when bot is already connected to a voice channel.
+
+        Args:
+            guild: Discord guild where bot is connected
+        """
+        current_channel = guild.voice_client.channel
+        current_members = self._count_human_members(current_channel)
+
+        # Find the busiest channel
+        busiest_channel, max_members = await self.find_busiest_voice_channel(guild)
+
+        # If the current channel is still the busiest or tied for busiest, stay
+        if not busiest_channel or current_members >= max_members:
+            return
+
+        # If there's a busier channel, move to it
+        if max_members > current_members:
+            await guild.voice_client.move_to(busiest_channel)
+            safe_guild_name = self._safe_guild_name(guild)
+            self.logger.info(f"[{safe_guild_name}] Bot moved to busier channel: {busiest_channel.name} ({max_members} members)")
+
+    async def check_and_leave_if_empty(self, guild: discord.Guild) -> None:
+        """
+        Check if the bot's current voice channel is empty and leave if so.
+
+        Args:
+            guild: Discord guild to check
+        """
         try:
             # Check if bot is connected to a voice channel
             if not guild.voice_client or not guild.voice_client.is_connected():
@@ -241,10 +365,10 @@ class BellboyBot(commands.Bot):
             current_channel = guild.voice_client.channel
 
             # Count non-bot members in the channel
-            human_members = [member for member in current_channel.members if not member.bot]
+            human_members = self._count_human_members(current_channel)
 
             # If no human members, disconnect
-            if len(human_members) == 0:
+            if human_members == 0:
                 await guild.voice_client.disconnect()
                 safe_guild_name = self._safe_guild_name(guild)
                 self.logger.info(f"[{safe_guild_name}] Bot left voice channel '{current_channel.name}' - no members remaining")
@@ -253,13 +377,20 @@ class BellboyBot(commands.Bot):
             safe_guild_name = self._safe_guild_name(guild)
             self.logger.error(f"[{safe_guild_name}] Error checking empty channel: {e}")
 
-    async def on_voice_state_update(self, member, before, after):
-        """Called when a user's voice state changes."""
-        # Skip if monitoring specific guild and this isn't it
-        if config.guild_id and member.guild.id != config.guild_id:
+    async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState) -> None:
+        """
+        Called when a user's voice state changes.
+
+        Args:
+            member: Discord member whose voice state changed
+            before: Voice state before the change
+            after: Voice state after the change
+        """
+        # Skip if not monitoring this guild
+        if not self._is_monitoring_guild(member.guild):
             return
 
-        username = f"{member.display_name} ({member.name}#{member.discriminator})"
+        username = self._format_member_info(member)
         safe_guild_name = self._safe_guild_name(member.guild)
 
         # User joined a voice channel
@@ -289,34 +420,51 @@ class BellboyBot(commands.Bot):
             if config.auto_leave_empty:
                 await self.check_and_leave_if_empty(member.guild)
 
-    async def on_member_join(self, member):
-        """Called when a member joins the server."""
-        # Skip if monitoring specific guild and this isn't it
-        if config.guild_id and member.guild.id != config.guild_id:
+    async def on_member_join(self, member: discord.Member) -> None:
+        """
+        Called when a member joins the server.
+
+        Args:
+            member: Discord member who joined
+        """
+        # Skip if not monitoring this guild
+        if not self._is_monitoring_guild(member.guild):
             return
 
-        username = f"{member.display_name} ({member.name}#{member.discriminator})"
+        username = self._format_member_info(member)
         safe_guild_name = self._safe_guild_name(member.guild)
         message = f"[{safe_guild_name}] {username} joined the server"
         self.logger.info(message)
 
-    async def on_member_remove(self, member):
-        """Called when a member leaves the server."""
-        # Skip if monitoring specific guild and this isn't it
-        if config.guild_id and member.guild.id != config.guild_id:
+    async def on_member_remove(self, member: discord.Member) -> None:
+        """
+        Called when a member leaves the server.
+
+        Args:
+            member: Discord member who left
+        """
+        # Skip if not monitoring this guild
+        if not self._is_monitoring_guild(member.guild):
             return
 
-        username = f"{member.display_name} ({member.name}#{member.discriminator})"
+        username = self._format_member_info(member)
         safe_guild_name = self._safe_guild_name(member.guild)
         message = f"[{safe_guild_name}] {username} left the server"
         self.logger.info(message)
 
-    async def on_error(self, event, *args, **kwargs):
-        """Handle errors."""
+    async def on_error(self, event: str, *args, **kwargs) -> None:
+        """
+        Handle errors that occur during event processing.
+
+        Args:
+            event: Name of the event that caused the error
+            *args: Positional arguments passed to the event
+            **kwargs: Keyword arguments passed to the event
+        """
         self.logger.error(f'An error occurred in event {event}', exc_info=True)
 
 
-def main():
+def main() -> None:
     """Main function to run the bot."""
     # Validate configuration
     if not config.validate():
@@ -330,8 +478,11 @@ def main():
         bot.run(config.discord_token)
     except discord.LoginFailure:
         print("Error: Invalid Discord token. Please check your DISCORD_TOKEN in .env file.")
+    except KeyboardInterrupt:
+        print("Bot shutdown requested by user.")
     except Exception as e:
         print(f"Error running bot: {e}")
+        logging.getLogger('bellboy').error(f"Fatal error running bot: {e}", exc_info=True)
 
 
 if __name__ == "__main__":
