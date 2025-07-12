@@ -14,6 +14,14 @@ services:
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - AUTO_JOIN_BUSIEST=${AUTO_JOIN_BUSIEST:-true}
       - AUTO_LEAVE_EMPTY=${AUTO_LEAVE_EMPTY:-true}
+      # TTS configuration
+      - TTS_LANGUAGE=${TTS_LANGUAGE:-en}
+      - TTS_MODEL=${TTS_MODEL:-tts_models/en/ljspeech/fast_pitch}
+      - TTS_CACHE_SIZE=${TTS_CACHE_SIZE:-50}
+      # New Relic monitoring
+      - NEW_RELIC_LICENSE_KEY=${NEW_RELIC_LICENSE_KEY:-}
+      - NEW_RELIC_APP_NAME=${NEW_RELIC_APP_NAME:-Discord-Bellboy-Bot}
+      - NEW_RELIC_ENVIRONMENT=${NEW_RELIC_ENVIRONMENT:-production}
     volumes:
       - ./logs:/app/logs
       - ./.env:/app/.env:ro
