@@ -6,7 +6,7 @@ This Discord bot is instrumented with New Relic for comprehensive application mo
 
 1. **Create a New Relic Account**: Sign up at [https://newrelic.com](https://newrelic.com)
 
-2. **Get Your License Key**: 
+2. **Get Your License Key**:
    - Go to [API Keys](https://one.newrelic.com/launcher/api-keys-ui.api-keys-launcher)
    - Copy your License Key (starts with `NRAL-`)
 
@@ -14,7 +14,7 @@ This Discord bot is instrumented with New Relic for comprehensive application mo
    ```bash
    # Required
    NEW_RELIC_LICENSE_KEY=your_license_key_here
-   
+
    # Optional (with defaults)
    NEW_RELIC_APP_NAME=Discord-Bellboy-Bot
    NEW_RELIC_ENVIRONMENT=production

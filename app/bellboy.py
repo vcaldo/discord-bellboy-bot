@@ -25,7 +25,7 @@ if NEW_RELIC_LICENSE_KEY:
     os.environ.setdefault('NEW_RELIC_ENVIRONMENT', NEW_RELIC_ENVIRONMENT)
     os.environ.setdefault('NEW_RELIC_LOG_FILE', '/app/logs/newrelic-agent.log')
     os.environ.setdefault('NEW_RELIC_LOG_LEVEL', 'info')
-    
+
     # Initialize New Relic
     newrelic.agent.initialize()
     print(f"New Relic initialized for app: {NEW_RELIC_APP_NAME}")
@@ -189,7 +189,7 @@ class BellboyBot(discord.Client):
         try:
             # Record custom metric for TTS requests
             newrelic.agent.record_custom_metric('Custom/TTS/Requests', 1)
-            
+
             # Add custom attributes for better debugging
             newrelic.agent.add_custom_attributes({
                 'tts.text_length': len(text),
@@ -362,7 +362,7 @@ class BellboyBot(discord.Client):
                 'guild.id': guild.id,
                 'guild.name': self._safe_guild_name(guild)
             })
-            
+
             # Record audio playback attempt
             newrelic.agent.record_custom_metric('Custom/Audio/PlaybackAttempts', 1)
 
@@ -394,7 +394,7 @@ class BellboyBot(discord.Client):
                 safe_guild_name = self._safe_guild_name(guild)
                 self.logger.debug(f"[{safe_guild_name}] Playing notification audio")
                 newrelic.agent.record_custom_metric('Custom/Audio/PlaybackSuccess', 1)
-                
+
             except discord.errors.ClientException as e:
                 newrelic.agent.record_custom_metric('Custom/Audio/DiscordClientError', 1)
                 newrelic.agent.notice_error()
@@ -516,7 +516,7 @@ class BellboyBot(discord.Client):
                     'action': 'joined',
                     'channel.name': after.channel.name
                 })
-                
+
                 self.logger.info(f"[{safe_guild_name}] {username} joined voice channel: {after.channel.name}")
                 # Generate TTS audio for user joining
                 join_message = f"{member.display_name} entrou"
@@ -532,7 +532,7 @@ class BellboyBot(discord.Client):
                     'action': 'left',
                     'channel.name': before.channel.name
                 })
-                
+
                 self.logger.info(f"[{safe_guild_name}] {username} left voice channel: {before.channel.name}")
                 # Generate TTS audio for user left
                 left_message = f"{member.display_name} saiu"
@@ -549,7 +549,7 @@ class BellboyBot(discord.Client):
                     'from_channel.name': before.channel.name,
                     'to_channel.name': after.channel.name
                 })
-                
+
                 self.logger.info(f"[{safe_guild_name}] {username} moved from {before.channel.name} to {after.channel.name}")
                 move_message = f"{member.display_name} se moveu"
                 tts_audio_path = f"/app/assets/coqui_tts_moved_{member.id}.mp3"
@@ -569,7 +569,7 @@ class BellboyBot(discord.Client):
         # Record error metrics in New Relic
         newrelic.agent.record_custom_metric('Custom/Discord/Errors', 1)
         newrelic.agent.notice_error()
-        
+
         self.logger.error(f'An error occurred in event {event}', exc_info=True)
 
     def _is_human_member(self, member: discord.Member) -> bool:
