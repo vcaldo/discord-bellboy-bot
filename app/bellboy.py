@@ -128,8 +128,16 @@ class BellboyBot(discord.Client):
             return f"Member_{member.id}"
 
     def _count_human_members(self, channel: discord.VoiceChannel) -> int:
-        """Count non-bot members in a voice channel."""
-        return len([member for member in channel.members if not member.bot])
+        """Count non-bot members in a voice channel, excluding all bots and applications."""
+        if channel is None:
+            return 0
+
+        # Filter out bots, applications, and the bot itself
+        human_members = [member for member in channel.members if self._is_human_member(member)]
+
+        member_names = [m.display_name for m in human_members]
+        self.logger.debug(f"Channel '{channel.name}' has {len(human_members)} human members: {member_names}")
+        return len(human_members)
 
     def _is_monitoring_guild(self, guild: discord.Guild) -> bool:
         """Check if the bot should monitor this guild."""
@@ -368,16 +376,26 @@ class BellboyBot(discord.Client):
         try:
             # Check if bot is connected
             if not guild.voice_client or not guild.voice_client.is_connected():
+                self.logger.debug(f"[{self._safe_guild_name(guild)}] Bot not connected to any voice channel")
                 return
 
             current_channel = guild.voice_client.channel
+
+            # Add a small delay to ensure discord state is updated
+            import asyncio
+            await asyncio.sleep(0.5)
+
             human_count = self._count_human_members(current_channel)
+
+            safe_guild_name = self._safe_guild_name(guild)
+            self.logger.debug(f"[{safe_guild_name}] Checking if should leave {current_channel.name}: {human_count} human members")
 
             # Leave if no human members
             if human_count == 0:
                 await guild.voice_client.disconnect()
-                safe_guild_name = self._safe_guild_name(guild)
                 self.logger.info(f"[{safe_guild_name}] Bot left empty channel: {current_channel.name}")
+            else:
+                self.logger.debug(f"[{safe_guild_name}] Staying in {current_channel.name} with {human_count} human members")
 
         except Exception as e:
             safe_guild_name = self._safe_guild_name(guild)
@@ -390,8 +408,12 @@ class BellboyBot(discord.Client):
 
     async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
         """Called when a user's voice state changes."""
-        # Skip if it's a bot
-        if not self._is_monitoring_guild(member.guild) or member.bot:
+        # Skip if not monitoring this guild
+        if not self._is_monitoring_guild(member.guild):
+            return
+
+        # Skip if it's not a human member (bots, apps, system users, etc.)
+        if not self._is_human_member(member):
             return
 
         username = self._format_member_info(member)
@@ -416,7 +438,7 @@ class BellboyBot(discord.Client):
             tts_audio_path = f"/app/assets/coqui_tts_left_{member.id}.mp3"
             if self.create_tts_mp3(left_message, tts_audio_path):
                 await self.play_notification_audio(tts_audio_path, guild)
-            # await self.leave_if_empty(guild)
+            await self.leave_if_empty(guild)
 
         # User moved between voice channels
         elif before.channel is not None and after.channel is not None and before.channel != after.channel:
@@ -426,12 +448,31 @@ class BellboyBot(discord.Client):
             if self.create_tts_mp3(move_message, tts_audio_path):
                 await self.play_notification_audio(tts_audio_path, guild)
             await self.join_busiest_channel_if_needed(guild)
-            # await self.leave_if_empty(guild)
+            await self.leave_if_empty(guild)
 
     async def on_error(self, event, *args, **kwargs):
         """Called when an error occurs."""
         self.logger.error(f'An error occurred in event {event}', exc_info=True)
 
+    def _is_human_member(self, member: discord.Member) -> bool:
+        """Check if a member is a real human user (not bot, app, or system user)."""
+        # Skip if it's a bot
+        if member.bot:
+            return False
+
+        # Skip if it's the bot itself (extra safety check)
+        if self.user and member.id == self.user.id:
+            return False
+
+        # Skip if it's a system user or application (if the attribute exists)
+        if hasattr(member, 'system') and member.system:
+            return False
+
+        # Skip if it's a webhook user
+        if hasattr(member, 'discriminator') and member.discriminator == '0000':
+            return False
+
+        return True
 
 def main():
     """Main function to run the bot."""
