@@ -28,7 +28,6 @@ TTS_MODEL = os.getenv('TTS_MODEL', 'tts_models/en/ljspeech/fast_pitch')
 LOGS_DIR = 'logs'
 LOG_DATE_FORMAT = '%Y%m%d'
 LOG_MESSAGE_FORMAT = '%(asctime)s | %(levelname)s | %(message)s'
-AUDIO_FILE_PATH = '/app/assets/notification.mp3'
 TTS_CACHE_SIZE = int(os.getenv('TTS_CACHE_SIZE', '50'))  # Number of TTS files to keep cached
 
 # FFmpeg options for audio playback
