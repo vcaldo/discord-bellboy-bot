@@ -23,7 +23,8 @@ DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
 GUILD_ID = os.getenv('GUILD_ID')
 LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO').upper()
 TTS_LANGUAGE = os.getenv('TTS_LANGUAGE', 'en')
-TTS_MODEL = os.getenv('TTS_MODEL', f'tts_models/{TTS_LANGUAGE}/ljspeech/fast_pitch')
+# Default to a higher quality model for better clarity
+TTS_MODEL = os.getenv('TTS_MODEL', f'tts_models/en/ljspeech/tacotron2-DDC')
 
 # Constants
 LOGS_DIR = 'logs'
@@ -31,10 +32,10 @@ LOG_DATE_FORMAT = '%Y%m%d'
 LOG_MESSAGE_FORMAT = '%(asctime)s | %(levelname)s | %(message)s'
 TTS_CACHE_SIZE = int(os.getenv('TTS_CACHE_SIZE', '50'))  # Number of TTS files to keep cached
 
-# FFmpeg options for audio playback
+# FFmpeg options for audio playback with enhanced clarity
 FFMPEG_OPTIONS = {
     'before_options': '-nostdin',
-    'options': '-vn -filter:a "volume=1.5"'
+    'options': '-vn -filter:a "volume=1.2,highpass=f=100,lowpass=f=7000"'
 }
 
 
@@ -180,13 +181,16 @@ class BellboyBot(discord.Client):
                 self.logger.error(f"Coqui TTS generation failed: {e}")
                 return False
 
-            # Convert WAV to MP3 using ffmpeg
+            # Convert WAV to MP3 using ffmpeg with audio enhancement
             ffmpeg_cmd = [
                 'ffmpeg',
                 '-y',  # Overwrite output file
                 '-i', temp_wav_path,
                 '-codec:a', 'mp3',
-                '-b:a', '192k',  # Increased bitrate for better quality
+                '-b:a', '192k',  # Higher bitrate for better quality
+                '-ar', '44100',  # Standard sample rate
+                '-ac', '2',      # Stereo output
+                '-af', 'loudnorm=I=-16:TP=-1.5:LRA=11,highpass=f=80,lowpass=f=8000',  # Audio normalization and filtering
                 output_path
             ]
 
