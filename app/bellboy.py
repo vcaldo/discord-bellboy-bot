@@ -19,14 +19,15 @@ NEW_RELIC_APP_NAME = os.getenv('NEW_RELIC_APP_NAME', 'Discord-Bellboy-Bot')
 NEW_RELIC_ENVIRONMENT = os.getenv('NEW_RELIC_ENVIRONMENT', 'production')
 
 if NEW_RELIC_LICENSE_KEY:
-    newrelic.agent.initialize(
-        config_file=None,
-        environment=NEW_RELIC_ENVIRONMENT,
-        license_key=NEW_RELIC_LICENSE_KEY,
-        app_name=NEW_RELIC_APP_NAME,
-        log_file='/app/logs/newrelic-agent.log',
-        log_level='info'
-    )
+    # Set New Relic environment variables for initialization
+    os.environ.setdefault('NEW_RELIC_LICENSE_KEY', NEW_RELIC_LICENSE_KEY)
+    os.environ.setdefault('NEW_RELIC_APP_NAME', NEW_RELIC_APP_NAME)
+    os.environ.setdefault('NEW_RELIC_ENVIRONMENT', NEW_RELIC_ENVIRONMENT)
+    os.environ.setdefault('NEW_RELIC_LOG_FILE', '/app/logs/newrelic-agent.log')
+    os.environ.setdefault('NEW_RELIC_LOG_LEVEL', 'info')
+    
+    # Initialize New Relic
+    newrelic.agent.initialize()
     print(f"New Relic initialized for app: {NEW_RELIC_APP_NAME}")
 else:
     print("New Relic license key not found - monitoring disabled")
@@ -550,7 +551,7 @@ class BellboyBot(discord.Client):
                 })
                 
                 self.logger.info(f"[{safe_guild_name}] {username} moved from {before.channel.name} to {after.channel.name}")
-                move_message = f"{member.display_name} moveu"
+                move_message = f"{member.display_name} se moveu"
                 tts_audio_path = f"/app/assets/coqui_tts_moved_{member.id}.mp3"
                 if self.create_tts_mp3(move_message, tts_audio_path):
                     await self.play_notification_audio(tts_audio_path, guild)
