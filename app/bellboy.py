@@ -34,7 +34,7 @@ TTS_CACHE_SIZE = int(os.getenv('TTS_CACHE_SIZE', '50'))  # Number of TTS files t
 # FFmpeg options for audio playback
 FFMPEG_OPTIONS = {
     'before_options': '-nostdin',
-    'options': '-vn -filter:a "volume=0.7"'
+    'options': '-vn -filter:a "volume=1.1"'
 }
 
 
