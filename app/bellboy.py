@@ -7,6 +7,31 @@ from datetime import datetime
 from typing import Optional, Tuple
 from dotenv import load_dotenv
 
+# Initialize New Relic first
+import newrelic.agent
+
+# Load environment variables
+load_dotenv()
+
+# Initialize New Relic if license key is provided
+NEW_RELIC_LICENSE_KEY = os.getenv('NEW_RELIC_LICENSE_KEY')
+NEW_RELIC_APP_NAME = os.getenv('NEW_RELIC_APP_NAME', 'Discord-Bellboy-Bot')
+NEW_RELIC_ENVIRONMENT = os.getenv('NEW_RELIC_ENVIRONMENT', 'production')
+
+if NEW_RELIC_LICENSE_KEY:
+    # Set New Relic environment variables for initialization
+    os.environ.setdefault('NEW_RELIC_LICENSE_KEY', NEW_RELIC_LICENSE_KEY)
+    os.environ.setdefault('NEW_RELIC_APP_NAME', NEW_RELIC_APP_NAME)
+    os.environ.setdefault('NEW_RELIC_ENVIRONMENT', NEW_RELIC_ENVIRONMENT)
+    os.environ.setdefault('NEW_RELIC_LOG_FILE', '/app/logs/newrelic-agent.log')
+    os.environ.setdefault('NEW_RELIC_LOG_LEVEL', 'info')
+
+    # Initialize New Relic
+    newrelic.agent.initialize()
+    print(f"New Relic initialized for app: {NEW_RELIC_APP_NAME}")
+else:
+    print("New Relic license key not found - monitoring disabled")
+
 # Try to import TTS, but make it optional
 try:
     from TTS.api import TTS
@@ -148,6 +173,7 @@ class BellboyBot(discord.Client):
                 return True
         return True
 
+    @newrelic.agent.function_trace()
     def create_tts_mp3(self, text: str, output_path: str, speaker: Optional[str] = None) -> bool:
         """
         Create an MP3 file from text using Coqui TTS.
@@ -161,8 +187,19 @@ class BellboyBot(discord.Client):
             bool: True if successful, False otherwise
         """
         try:
+            # Record custom metric for TTS requests
+            newrelic.agent.record_custom_metric('Custom/TTS/Requests', 1)
+
+            # Add custom attributes for better debugging
+            newrelic.agent.add_custom_attributes({
+                'tts.text_length': len(text),
+                'tts.output_path': output_path,
+                'tts.speaker': speaker or 'default'
+            })
+
             # Check if TTS is initialized
             if self.tts is None:
+                newrelic.agent.record_custom_metric('Custom/TTS/Errors/NotInitialized', 1)
                 self.logger.error("Coqui TTS not initialized")
                 return False
 
@@ -175,8 +212,11 @@ class BellboyBot(discord.Client):
 
             # Generate speech with Coqui TTS
             try:
-                self.tts.tts_to_file(text=text, file_path=temp_wav_path)
+                with newrelic.agent.FunctionTrace(name='TTS.tts_to_file'):
+                    self.tts.tts_to_file(text=text, file_path=temp_wav_path)
             except Exception as e:
+                newrelic.agent.record_custom_metric('Custom/TTS/Errors/Generation', 1)
+                newrelic.agent.notice_error()
                 self.logger.error(f"Coqui TTS generation failed: {e}")
                 return False
 
@@ -190,9 +230,11 @@ class BellboyBot(discord.Client):
                 output_path
             ]
 
-            result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True, timeout=30)
+            with newrelic.agent.FunctionTrace(name='FFmpeg.wav_to_mp3'):
+                result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True, timeout=30)
 
             if result.returncode != 0:
+                newrelic.agent.record_custom_metric('Custom/TTS/Errors/FFmpeg', 1)
                 self.logger.error(f"ffmpeg conversion failed: {result.stderr}")
                 return False
 
@@ -207,12 +249,18 @@ class BellboyBot(discord.Client):
             # Manage TTS cache
             self._manage_tts_cache(output_path)
 
+            # Record successful TTS generation
+            newrelic.agent.record_custom_metric('Custom/TTS/Success', 1)
             return True
 
         except subprocess.TimeoutExpired:
+            newrelic.agent.record_custom_metric('Custom/TTS/Errors/Timeout', 1)
+            newrelic.agent.notice_error()
             self.logger.error("TTS generation timed out")
             return False
         except Exception as e:
+            newrelic.agent.record_custom_metric('Custom/TTS/Errors/General', 1)
+            newrelic.agent.notice_error()
             self.logger.error(f"Error creating Coqui TTS MP3: {e}")
             return False
 
@@ -246,6 +294,7 @@ class BellboyBot(discord.Client):
         except Exception as e:
             self.logger.error(f"Error managing TTS cache: {e}")
 
+    @newrelic.agent.function_trace()
     async def create_and_play_tts(self, text: str, guild: discord.Guild, speaker: Optional[str] = None) -> None:
         """
         Create a TTS MP3 from text using Coqui TTS and play it in the current voice channel.
@@ -297,6 +346,7 @@ class BellboyBot(discord.Client):
 
         return busiest_channel, max_members
 
+    @newrelic.agent.function_trace()
     async def play_notification_audio(self, audio_path: str, guild: discord.Guild) -> None:
         """
         Play notification audio in the voice channel if bot is connected.
@@ -306,18 +356,31 @@ class BellboyBot(discord.Client):
             guild: Discord guild where the bot should play audio
         """
         try:
+            # Add custom attributes for monitoring
+            newrelic.agent.add_custom_attributes({
+                'audio.path': audio_path,
+                'guild.id': guild.id,
+                'guild.name': self._safe_guild_name(guild)
+            })
+
+            # Record audio playback attempt
+            newrelic.agent.record_custom_metric('Custom/Audio/PlaybackAttempts', 1)
+
             # Check if bot is connected to a voice channel
             if not guild.voice_client or not guild.voice_client.is_connected():
+                newrelic.agent.record_custom_metric('Custom/Audio/NotConnected', 1)
                 return
 
             # Check if audio file exists
             if not os.path.exists(audio_path):
+                newrelic.agent.record_custom_metric('Custom/Audio/FileNotFound', 1)
                 safe_guild_name = self._safe_guild_name(guild)
                 self.logger.warning(f"[{safe_guild_name}] Audio file not found: {audio_path}")
                 return
 
             # Don't interrupt if already playing audio
             if guild.voice_client.is_playing():
+                newrelic.agent.record_custom_metric('Custom/Audio/AlreadyPlaying', 1)
                 return
 
             # Create audio source and play
@@ -330,14 +393,22 @@ class BellboyBot(discord.Client):
 
                 safe_guild_name = self._safe_guild_name(guild)
                 self.logger.debug(f"[{safe_guild_name}] Playing notification audio")
+                newrelic.agent.record_custom_metric('Custom/Audio/PlaybackSuccess', 1)
+
             except discord.errors.ClientException as e:
+                newrelic.agent.record_custom_metric('Custom/Audio/DiscordClientError', 1)
+                newrelic.agent.notice_error()
                 safe_guild_name = self._safe_guild_name(guild)
                 self.logger.error(f"[{safe_guild_name}] Discord client error playing audio: {e}")
             except Exception as e:
+                newrelic.agent.record_custom_metric('Custom/Audio/FFmpegError', 1)
+                newrelic.agent.notice_error()
                 safe_guild_name = self._safe_guild_name(guild)
                 self.logger.error(f"[{safe_guild_name}] FFmpeg error playing audio: {e}")
 
         except Exception as e:
+            newrelic.agent.record_custom_metric('Custom/Audio/GeneralError', 1)
+            newrelic.agent.notice_error()
             safe_guild_name = self._safe_guild_name(guild)
             self.logger.error(f"[{safe_guild_name}] Error playing notification audio: {e}")
 
@@ -406,52 +477,99 @@ class BellboyBot(discord.Client):
         self.logger.info(f'Bot logged in as {self.user} (ID: {self.user.id})')
         self.logger.info('Monitoring voice channel activity...')
 
+    @newrelic.agent.function_trace()
     async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
         """Called when a user's voice state changes."""
-        # Skip if not monitoring this guild
-        if not self._is_monitoring_guild(member.guild):
-            return
+        try:
+            # Add custom attributes for monitoring
+            newrelic.agent.add_custom_attributes({
+                'guild.id': member.guild.id,
+                'guild.name': self._safe_guild_name(member.guild),
+                'member.id': member.id,
+                'member.name': member.display_name,
+                'member.is_bot': member.bot
+            })
 
-        # Skip if it's not a human member (bots, apps, system users, etc.)
-        if not self._is_human_member(member):
-            return
+            # Record voice activity metrics
+            newrelic.agent.record_custom_metric('Custom/Discord/VoiceStateUpdates', 1)
 
-        username = self._format_member_info(member)
-        safe_guild_name = self._safe_guild_name(member.guild)
-        guild = member.guild
+            # Skip if not monitoring this guild
+            if not self._is_monitoring_guild(member.guild):
+                return
 
-        # User joined a voice channel
-        if before.channel is None and after.channel is not None:
-            self.logger.info(f"[{safe_guild_name}] {username} joined voice channel: {after.channel.name}")
-            # Generate TTS audio for user joining
-            join_message = f"{member.display_name} entrou"
-            tts_audio_path = f"/app/assets/coqui_tts_join_{member.id}.mp3"
-            if self.create_tts_mp3(join_message, tts_audio_path):
-                await self.play_notification_audio(tts_audio_path, guild)
-            await self.join_busiest_channel_if_needed(guild)
+            # Skip if it's not a human member (bots, apps, system users, etc.)
+            if not self._is_human_member(member):
+                newrelic.agent.record_custom_metric('Custom/Discord/BotVoiceActivity', 1)
+                return
 
-        # User left a voice channel
-        elif before.channel is not None and after.channel is None:
-            self.logger.info(f"[{safe_guild_name}] {username} left voice channel: {before.channel.name}")
-            # Generate TTS audio for user left
-            left_message = f"{member.display_name} saiu"
-            tts_audio_path = f"/app/assets/coqui_tts_left_{member.id}.mp3"
-            if self.create_tts_mp3(left_message, tts_audio_path):
-                await self.play_notification_audio(tts_audio_path, guild)
-            await self.leave_if_empty(guild)
+            # Record human voice activity
+            newrelic.agent.record_custom_metric('Custom/Discord/HumanVoiceActivity', 1)
 
-        # User moved between voice channels
-        elif before.channel is not None and after.channel is not None and before.channel != after.channel:
-            self.logger.info(f"[{safe_guild_name}] {username} moved from {before.channel.name} to {after.channel.name}")
-            move_message = f"{member.display_name} moveu"
-            tts_audio_path = f"/app/assets/coqui_tts_moved_{member.id}.mp3"
-            if self.create_tts_mp3(move_message, tts_audio_path):
-                await self.play_notification_audio(tts_audio_path, guild)
-            await self.join_busiest_channel_if_needed(guild)
-            await self.leave_if_empty(guild)
+            username = self._format_member_info(member)
+            safe_guild_name = self._safe_guild_name(member.guild)
+            guild = member.guild
+
+            # User joined a voice channel
+            if before.channel is None and after.channel is not None:
+                newrelic.agent.record_custom_metric('Custom/Discord/UserJoined', 1)
+                newrelic.agent.add_custom_attributes({
+                    'action': 'joined',
+                    'channel.name': after.channel.name
+                })
+
+                self.logger.info(f"[{safe_guild_name}] {username} joined voice channel: {after.channel.name}")
+                # Generate TTS audio for user joining
+                join_message = f"{member.display_name} entrou"
+                tts_audio_path = f"/app/assets/coqui_tts_join_{member.id}.mp3"
+                if self.create_tts_mp3(join_message, tts_audio_path):
+                    await self.play_notification_audio(tts_audio_path, guild)
+                await self.join_busiest_channel_if_needed(guild)
+
+            # User left a voice channel
+            elif before.channel is not None and after.channel is None:
+                newrelic.agent.record_custom_metric('Custom/Discord/UserLeft', 1)
+                newrelic.agent.add_custom_attributes({
+                    'action': 'left',
+                    'channel.name': before.channel.name
+                })
+
+                self.logger.info(f"[{safe_guild_name}] {username} left voice channel: {before.channel.name}")
+                # Generate TTS audio for user left
+                left_message = f"{member.display_name} saiu"
+                tts_audio_path = f"/app/assets/coqui_tts_left_{member.id}.mp3"
+                if self.create_tts_mp3(left_message, tts_audio_path):
+                    await self.play_notification_audio(tts_audio_path, guild)
+                await self.leave_if_empty(guild)
+
+            # User moved between voice channels
+            elif before.channel is not None and after.channel is not None and before.channel != after.channel:
+                newrelic.agent.record_custom_metric('Custom/Discord/UserMoved', 1)
+                newrelic.agent.add_custom_attributes({
+                    'action': 'moved',
+                    'from_channel.name': before.channel.name,
+                    'to_channel.name': after.channel.name
+                })
+
+                self.logger.info(f"[{safe_guild_name}] {username} moved from {before.channel.name} to {after.channel.name}")
+                move_message = f"{member.display_name} se moveu"
+                tts_audio_path = f"/app/assets/coqui_tts_moved_{member.id}.mp3"
+                if self.create_tts_mp3(move_message, tts_audio_path):
+                    await self.play_notification_audio(tts_audio_path, guild)
+                await self.join_busiest_channel_if_needed(guild)
+                await self.leave_if_empty(guild)
+
+        except Exception as e:
+            newrelic.agent.record_custom_metric('Custom/Discord/VoiceStateUpdateErrors', 1)
+            newrelic.agent.notice_error()
+            safe_guild_name = self._safe_guild_name(member.guild)
+            self.logger.error(f"[{safe_guild_name}] Error in voice state update: {e}")
 
     async def on_error(self, event, *args, **kwargs):
         """Called when an error occurs."""
+        # Record error metrics in New Relic
+        newrelic.agent.record_custom_metric('Custom/Discord/Errors', 1)
+        newrelic.agent.notice_error()
+
         self.logger.error(f'An error occurred in event {event}', exc_info=True)
 
     def _is_human_member(self, member: discord.Member) -> bool:
@@ -474,6 +592,7 @@ class BellboyBot(discord.Client):
 
         return True
 
+@newrelic.agent.background_task()
 def main():
     """Main function to run the bot."""
     # Validate configuration
@@ -485,12 +604,19 @@ def main():
     bot = BellboyBot()
 
     try:
+        # Record bot startup
+        newrelic.agent.record_custom_metric('Custom/Bot/Startup', 1)
         bot.run(DISCORD_TOKEN)
     except discord.LoginFailure:
+        newrelic.agent.record_custom_metric('Custom/Bot/LoginFailure', 1)
+        newrelic.agent.notice_error()
         print("Error: Invalid Discord token. Please check your DISCORD_TOKEN in .env file.")
     except KeyboardInterrupt:
+        newrelic.agent.record_custom_metric('Custom/Bot/ManualShutdown', 1)
         print("Bot shutdown requested by user.")
     except Exception as e:
+        newrelic.agent.record_custom_metric('Custom/Bot/FatalError', 1)
+        newrelic.agent.notice_error()
         print(f"Error running bot: {e}")
         logging.getLogger('bellboy').error(f"Fatal error running bot: {e}", exc_info=True)
 

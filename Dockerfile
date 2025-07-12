@@ -43,8 +43,14 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY app/ .
 
+# Copy New Relic configuration
+COPY newrelic.ini .
+
 # Create logs directory
 RUN mkdir -p logs
+
+# Create assets directory for TTS files
+RUN mkdir -p assets
 
 # Create a non-root user for security
 RUN useradd --create-home --shell /bin/bash app && \
@@ -57,5 +63,5 @@ USER app
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD python -c "import sys; sys.exit(0)" || exit 1
 
-# Command to run the application
-CMD ["python", "bellboy.py"]
+# Command to run the application with New Relic monitoring
+CMD ["newrelic-admin", "run-program", "python", "bellboy.py"]
