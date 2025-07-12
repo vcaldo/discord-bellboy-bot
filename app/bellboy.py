@@ -23,7 +23,7 @@ DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
 GUILD_ID = os.getenv('GUILD_ID')
 LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO').upper()
 TTS_LANGUAGE = os.getenv('TTS_LANGUAGE', 'en')
-TTS_MODEL = os.getenv('TTS_MODEL', f'tts_models/{TTS_LANGUAGE}/ljspeech/fast_pitch')
+TTS_MODEL = os.getenv('TTS_MODEL', f'tts_models/en/ljspeech/fast_pitch')
 
 # Constants
 LOGS_DIR = 'logs'
