@@ -22,7 +22,8 @@ load_dotenv()
 DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
 GUILD_ID = os.getenv('GUILD_ID')
 LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO').upper()
-TTS_MODEL = os.getenv('TTS_MODEL', 'tts_models/en/ljspeech/fast_pitch')
+TTS_LANGUAGE = os.getenv('TTS_LANGUAGE', 'en')
+TTS_MODEL = os.getenv('TTS_MODEL', f'tts_models/{TTS_LANGUAGE}/ljspeech/fast_pitch')
 
 # Constants
 LOGS_DIR = 'logs'
@@ -401,7 +402,7 @@ class BellboyBot(discord.Client):
         if before.channel is None and after.channel is not None:
             self.logger.info(f"[{safe_guild_name}] {username} joined voice channel: {after.channel.name}")
             # Generate TTS audio for user joining
-            join_message = f"{member.display_name} joined"
+            join_message = f"{member.display_name} entrou"
             tts_audio_path = f"/app/assets/coqui_tts_join_{member.id}.mp3"
             if self.create_tts_mp3(join_message, tts_audio_path):
                 await self.play_notification_audio(tts_audio_path, guild)
@@ -411,7 +412,7 @@ class BellboyBot(discord.Client):
         elif before.channel is not None and after.channel is None:
             self.logger.info(f"[{safe_guild_name}] {username} left voice channel: {before.channel.name}")
             # Generate TTS audio for user left
-            left_message = f"{member.display_name} left"
+            left_message = f"{member.display_name} saiu"
             tts_audio_path = f"/app/assets/coqui_tts_left_{member.id}.mp3"
             if self.create_tts_mp3(left_message, tts_audio_path):
                 await self.play_notification_audio(tts_audio_path, guild)
@@ -420,7 +421,7 @@ class BellboyBot(discord.Client):
         # User moved between voice channels
         elif before.channel is not None and after.channel is not None and before.channel != after.channel:
             self.logger.info(f"[{safe_guild_name}] {username} moved from {before.channel.name} to {after.channel.name}")
-            move_message = f"{member.display_name} moved"
+            move_message = f"{member.display_name} moveu"
             tts_audio_path = f"/app/assets/coqui_tts_moved_{member.id}.mp3"
             if self.create_tts_mp3(move_message, tts_audio_path):
                 await self.play_notification_audio(tts_audio_path, guild)
