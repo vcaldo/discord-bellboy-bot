@@ -34,7 +34,7 @@ TTS_CACHE_SIZE = int(os.getenv('TTS_CACHE_SIZE', '50'))  # Number of TTS files t
 # FFmpeg options for audio playback
 FFMPEG_OPTIONS = {
     'before_options': '-nostdin',
-    'options': '-vn -filter:a "volume=0.7"'
+    'options': '-vn -filter:a "volume=1.5"'
 }
 
 
@@ -186,7 +186,7 @@ class BellboyBot(discord.Client):
                 '-y',  # Overwrite output file
                 '-i', temp_wav_path,
                 '-codec:a', 'mp3',
-                '-b:a', '128k',
+                '-b:a', '192k',  # Increased bitrate for better quality
                 output_path
             ]
 
