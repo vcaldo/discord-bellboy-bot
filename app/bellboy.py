@@ -23,8 +23,8 @@ if NEW_RELIC_LICENSE_KEY:
     os.environ.setdefault('NEW_RELIC_LICENSE_KEY', NEW_RELIC_LICENSE_KEY)
     os.environ.setdefault('NEW_RELIC_APP_NAME', NEW_RELIC_APP_NAME)
     os.environ.setdefault('NEW_RELIC_ENVIRONMENT', NEW_RELIC_ENVIRONMENT)
-    os.environ.setdefault('NEW_RELIC_LOG_FILE', '/app/logs/newrelic-agent.log')
-    os.environ.setdefault('NEW_RELIC_LOG_LEVEL', 'info')
+    # Disable New Relic agent logging
+    os.environ.setdefault('NEW_RELIC_LOG', 'off')
 
     # Initialize New Relic
     newrelic.agent.initialize()
