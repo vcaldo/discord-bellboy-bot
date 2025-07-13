@@ -7,33 +7,30 @@ from datetime import datetime
 from typing import Optional, Tuple
 from dotenv import load_dotenv
 
-# Initialize New Relic first
-import newrelic.agent
-
-# Load environment variables
+# Load environment variables first
 load_dotenv()
 
-# Initialize New Relic if license key is provided
+# Initialize New Relic with defensive approach
+import newrelic.agent
+
+# Get New Relic configuration
 NEW_RELIC_LICENSE_KEY = os.getenv('NEW_RELIC_LICENSE_KEY')
 NEW_RELIC_APP_NAME = os.getenv('NEW_RELIC_APP_NAME', 'Discord-Bellboy-Bot')
 NEW_RELIC_ENVIRONMENT = os.getenv('NEW_RELIC_ENVIRONMENT', 'production')
 
 if NEW_RELIC_LICENSE_KEY:
-    # Set New Relic environment variables for initialization
-    os.environ.setdefault('NEW_RELIC_LICENSE_KEY', NEW_RELIC_LICENSE_KEY)
-    os.environ.setdefault('NEW_RELIC_APP_NAME', NEW_RELIC_APP_NAME)
-    os.environ.setdefault('NEW_RELIC_ENVIRONMENT', NEW_RELIC_ENVIRONMENT)
-    # Set config file path
-    os.environ.setdefault('NEW_RELIC_CONFIG_FILE', '/app/newrelic.ini')
-
-    # Initialize New Relic
-    newrelic.agent.initialize()
-    
-    # Verify initialization
-    app = newrelic.agent.application()
-    print(f"New Relic initialized for app: {NEW_RELIC_APP_NAME}")
-    print(f"New Relic application object: {app}")
-    print(f"New Relic config file: {os.environ.get('NEW_RELIC_CONFIG_FILE')}")
+    # When using newrelic-admin run-program, the agent is automatically initialized
+    # We just need to register the application and verify it's working
+    try:
+        app = newrelic.agent.register_application(timeout=10.0)
+        if app:
+            print(f"New Relic application registered: {NEW_RELIC_APP_NAME}")
+            print(f"New Relic application object: {app}")
+        else:
+            print("New Relic application registration failed")
+    except Exception as e:
+        print(f"New Relic application registration error: {e}")
+        print("Continuing without New Relic monitoring...")
 else:
     print("New Relic license key not found - monitoring disabled")
 
@@ -44,9 +41,6 @@ try:
 except ImportError:
     TTS_AVAILABLE = False
     TTS = None
-
-# Load environment variables
-load_dotenv()
 
 # Configuration
 DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')

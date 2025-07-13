@@ -20,6 +20,7 @@ services:
       - NEW_RELIC_LICENSE_KEY=${NEW_RELIC_LICENSE_KEY:-}
       - NEW_RELIC_APP_NAME=${NEW_RELIC_APP_NAME:-Discord-Bellboy-Bot}
       - NEW_RELIC_ENVIRONMENT=${NEW_RELIC_ENVIRONMENT:-production}
+      - NEW_RELIC_CONFIG_FILE=/app/newrelic.ini
     volumes:
       - ./logs:/app/logs
       - ./.env:/app/.env:ro
