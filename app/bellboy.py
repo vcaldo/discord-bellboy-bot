@@ -7,28 +7,30 @@ from datetime import datetime
 from typing import Optional, Tuple
 from dotenv import load_dotenv
 
-# Initialize New Relic first
-import newrelic.agent
-
-# Load environment variables
+# Load environment variables first
 load_dotenv()
 
-# Initialize New Relic if license key is provided
+# Initialize New Relic with defensive approach
+import newrelic.agent
+
+# Get New Relic configuration
 NEW_RELIC_LICENSE_KEY = os.getenv('NEW_RELIC_LICENSE_KEY')
 NEW_RELIC_APP_NAME = os.getenv('NEW_RELIC_APP_NAME', 'Discord-Bellboy-Bot')
 NEW_RELIC_ENVIRONMENT = os.getenv('NEW_RELIC_ENVIRONMENT', 'production')
 
 if NEW_RELIC_LICENSE_KEY:
-    # Set New Relic environment variables for initialization
-    os.environ.setdefault('NEW_RELIC_LICENSE_KEY', NEW_RELIC_LICENSE_KEY)
-    os.environ.setdefault('NEW_RELIC_APP_NAME', NEW_RELIC_APP_NAME)
-    os.environ.setdefault('NEW_RELIC_ENVIRONMENT', NEW_RELIC_ENVIRONMENT)
-    # Disable New Relic agent logging
-    os.environ.setdefault('NEW_RELIC_LOG', 'off')
-
-    # Initialize New Relic
-    newrelic.agent.initialize()
-    print(f"New Relic initialized for app: {NEW_RELIC_APP_NAME}")
+    # When using newrelic-admin run-program, the agent is automatically initialized
+    # We just need to register the application and verify it's working
+    try:
+        app = newrelic.agent.register_application(timeout=10.0)
+        if app:
+            print(f"New Relic application registered: {NEW_RELIC_APP_NAME}")
+            print(f"New Relic application object: {app}")
+        else:
+            print("New Relic application registration failed")
+    except Exception as e:
+        print(f"New Relic application registration error: {e}")
+        print("Continuing without New Relic monitoring...")
 else:
     print("New Relic license key not found - monitoring disabled")
 
@@ -39,9 +41,6 @@ try:
 except ImportError:
     TTS_AVAILABLE = False
     TTS = None
-
-# Load environment variables
-load_dotenv()
 
 # Configuration
 DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
@@ -86,6 +85,10 @@ class BellboyBot(discord.Client):
 
         # Initialize Coqui TTS
         self._init_tts()
+
+        # Test New Relic transaction
+        if NEW_RELIC_LICENSE_KEY:
+            self._test_newrelic_transaction()
 
     def _setup_logging(self) -> None:
         """Set up logging to file and console."""
@@ -472,6 +475,16 @@ class BellboyBot(discord.Client):
             safe_guild_name = self._safe_guild_name(guild)
             self.logger.error(f"[{safe_guild_name}] Error checking if should leave empty channel: {e}")
 
+    def _wrap_discord_event(self, event_name: str):
+        """Decorator to wrap Discord events as New Relic transactions."""
+        def decorator(func):
+            async def wrapper(*args, **kwargs):
+                with newrelic.agent.BackgroundTask(application=newrelic.agent.application(), name=f'Discord.{event_name}'):
+                    return await func(*args, **kwargs)
+            return wrapper
+        return decorator
+
+    @newrelic.agent.background_task(name='Discord.on_ready')
     async def on_ready(self):
         """Called when the bot is ready."""
         self.logger.info(f'Bot logged in as {self.user} (ID: {self.user.id})')
@@ -520,7 +533,7 @@ class BellboyBot(discord.Client):
             self.logger.error(f"Error during startup voice channel check: {e}")
             newrelic.agent.notice_error()
 
-    @newrelic.agent.function_trace()
+    @newrelic.agent.background_task(name='Discord.on_voice_state_update')
     async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
         """Called when a user's voice state changes."""
         try:
@@ -607,6 +620,7 @@ class BellboyBot(discord.Client):
             safe_guild_name = self._safe_guild_name(member.guild)
             self.logger.error(f"[{safe_guild_name}] Error in voice state update: {e}")
 
+    @newrelic.agent.background_task(name='Discord.on_error')
     async def on_error(self, event, *args, **kwargs):
         """Called when an error occurs."""
         # Record error metrics in New Relic
@@ -635,7 +649,20 @@ class BellboyBot(discord.Client):
 
         return True
 
-@newrelic.agent.background_task()
+    @newrelic.agent.background_task(name='Discord.Bot.TestTransaction')
+    def _test_newrelic_transaction(self):
+        """Test function to verify New Relic is working."""
+        try:
+            newrelic.agent.record_custom_metric('Custom/Bot/TestTransaction', 1)
+            newrelic.agent.add_custom_attributes({
+                'test.status': 'success',
+                'test.timestamp': datetime.now().isoformat()
+            })
+            self.logger.info("New Relic test transaction recorded successfully")
+        except Exception as e:
+            self.logger.error(f"New Relic test transaction failed: {e}")
+
+@newrelic.agent.background_task(name='Discord.Bot.Main')
 def main():
     """Main function to run the bot."""
     # Validate configuration
@@ -649,6 +676,10 @@ def main():
     try:
         # Record bot startup
         newrelic.agent.record_custom_metric('Custom/Bot/Startup', 1)
+        newrelic.agent.add_custom_attributes({
+            'bot.environment': NEW_RELIC_ENVIRONMENT,
+            'bot.app_name': NEW_RELIC_APP_NAME
+        })
         bot.run(DISCORD_TOKEN)
     except discord.LoginFailure:
         newrelic.agent.record_custom_metric('Custom/Bot/LoginFailure', 1)
