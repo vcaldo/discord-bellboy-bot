@@ -519,7 +519,7 @@ class BellboyBot(discord.Client):
 
                 self.logger.info(f"[{safe_guild_name}] {username} joined voice channel: {after.channel.name}")
                 # Generate TTS audio for user joining
-                join_message = f"{member.display_name} entrou"
+                join_message = f"Bem vindo {member.display_name}"
                 tts_audio_path = f"/app/assets/coqui_tts_join_{member.id}.mp3"
                 if self.create_tts_mp3(join_message, tts_audio_path):
                     await self.play_notification_audio(tts_audio_path, guild)
@@ -535,7 +535,7 @@ class BellboyBot(discord.Client):
 
                 self.logger.info(f"[{safe_guild_name}] {username} left voice channel: {before.channel.name}")
                 # Generate TTS audio for user left
-                left_message = f"{member.display_name} saiu"
+                left_message = f"tchau tchau {member.display_name}"
                 tts_audio_path = f"/app/assets/coqui_tts_left_{member.id}.mp3"
                 if self.create_tts_mp3(left_message, tts_audio_path):
                     await self.play_notification_audio(tts_audio_path, guild)
@@ -551,7 +551,7 @@ class BellboyBot(discord.Client):
                 })
 
                 self.logger.info(f"[{safe_guild_name}] {username} moved from {before.channel.name} to {after.channel.name}")
-                move_message = f"{member.display_name} se moveu"
+                move_message = f"trocou de canal {member.display_name}"
                 tts_audio_path = f"/app/assets/coqui_tts_moved_{member.id}.mp3"
                 if self.create_tts_mp3(move_message, tts_audio_path):
                     await self.play_notification_audio(tts_audio_path, guild)
