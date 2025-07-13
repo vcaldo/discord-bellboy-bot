@@ -477,6 +477,49 @@ class BellboyBot(discord.Client):
         self.logger.info(f'Bot logged in as {self.user} (ID: {self.user.id})')
         self.logger.info('Monitoring voice channel activity...')
 
+        # Check if bot should join any channels on startup
+        await self._check_initial_voice_channels()
+
+    async def _check_initial_voice_channels(self) -> None:
+        """Check all guilds for voice channels with users and join the busiest one if needed."""
+        try:
+            # Record startup voice channel check
+            newrelic.agent.record_custom_metric('Custom/Bot/StartupChannelCheck', 1)
+
+            for guild in self.guilds:
+                try:
+                    # Skip if not monitoring this guild
+                    if not self._is_monitoring_guild(guild):
+                        continue
+
+                    safe_guild_name = self._safe_guild_name(guild)
+
+                    # Find the busiest voice channel
+                    busiest_channel, max_members = await self.find_busiest_voice_channel(guild)
+
+                    # Join if there are users in voice channels and bot is not connected
+                    if busiest_channel and max_members > 0 and not guild.voice_client:
+                        try:
+                            await busiest_channel.connect()
+                            self.logger.info(f"[{safe_guild_name}] Bot joined channel on startup: {busiest_channel.name} ({max_members} members)")
+                            newrelic.agent.record_custom_metric('Custom/Bot/StartupChannelJoin', 1)
+                        except discord.ClientException as e:
+                            self.logger.error(f"[{safe_guild_name}] Failed to join channel on startup: {e}")
+                            newrelic.agent.record_custom_metric('Custom/Bot/StartupChannelJoinError', 1)
+                    elif busiest_channel and max_members > 0:
+                        self.logger.info(f"[{safe_guild_name}] Found active channel on startup: {busiest_channel.name} ({max_members} members) - already connected")
+                    else:
+                        self.logger.debug(f"[{safe_guild_name}] No active voice channels found on startup")
+
+                except Exception as e:
+                    safe_guild_name = self._safe_guild_name(guild)
+                    self.logger.error(f"[{safe_guild_name}] Error checking voice channels on startup: {e}")
+                    newrelic.agent.notice_error()
+
+        except Exception as e:
+            self.logger.error(f"Error during startup voice channel check: {e}")
+            newrelic.agent.notice_error()
+
     @newrelic.agent.function_trace()
     async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
         """Called when a user's voice state changes."""
