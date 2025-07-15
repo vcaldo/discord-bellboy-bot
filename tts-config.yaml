@@ -4,20 +4,20 @@ providers:
     name: "Coqui TTS"
     enabled: true
     # Fast model for quick initialization (smaller download)
-    model: "tts_models/en/ljspeech/fast_pitch"
+    model: "tts_models/pt/cv/vits"
     # Alternative models:
     # "tts_models/en/ljspeech/fast_pitch" - higher quality but larger download
     # "tts_models/en/ljspeech/tacotron2-DDC" - faster, smaller download
-    language: "en"
+    language: "pt-BR"
     settings:
       progress_bar: false
       output_format: "mp3"
       audio_quality: "128k"
       volume: "1.1"
     messages:
-      join: "Welcome {display_name}"
-      leave: "Bye bye {display_name}"
-      move: "Moved channels {display_name}"
+      join: "Bem Vindo {display_name}"
+      leave: "Adeus {display_name}"
+      move: "Trocou de canal {display_name}"
 
   # Placeholder for future providers
   # elevenlabs:
