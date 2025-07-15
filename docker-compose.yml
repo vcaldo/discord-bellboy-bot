@@ -8,7 +8,6 @@ services:
     environment:
       # Discord bot configuration
       - DISCORD_TOKEN=${DISCORD_TOKEN}
-      - GUILD_ID=${GUILD_ID:-}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - AUTO_JOIN_BUSIEST=${AUTO_JOIN_BUSIEST:-true}
       - AUTO_LEAVE_EMPTY=${AUTO_LEAVE_EMPTY:-true}

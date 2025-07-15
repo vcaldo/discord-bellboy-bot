@@ -38,7 +38,6 @@ The main configuration is through environment variables in `.env`:
 ```bash
 # Required
 DISCORD_TOKEN=your_discord_bot_token_here
-GUILD_ID=your_guild_id_here
 
 # TTS Configuration
 TTS_PROVIDER=coqui

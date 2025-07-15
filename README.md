@@ -33,7 +33,6 @@ cp .env.example .env
 
 # Edit .env with your Discord token
 DISCORD_TOKEN=your_discord_bot_token_here
-GUILD_ID=your_guild_id_here
 TTS_PROVIDER=coqui
 ```
 
@@ -77,7 +76,6 @@ default_provider: "coqui"
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `DISCORD_TOKEN` | Your Discord bot token | Required |
-| `GUILD_ID` | Specific guild to monitor (optional) | All guilds |
 | `TTS_PROVIDER` | TTS provider to use | `coqui` |
 | `LOG_LEVEL` | Logging level | `INFO` |
 | `NEW_RELIC_LICENSE_KEY` | New Relic monitoring (optional) | Disabled |

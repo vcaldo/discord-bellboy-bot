@@ -21,7 +21,6 @@ cp .env.example .env
 Edit `.env` and set your Discord token:
 ```bash
 DISCORD_TOKEN=your_actual_discord_token_here
-GUILD_ID=your_guild_id_here
 TTS_PROVIDER=coqui
 ```
 
@@ -74,7 +73,6 @@ providers:
 
 - `TTS_PROVIDER`: Set to `coqui` (more providers coming soon)
 - `DISCORD_TOKEN`: Your Discord bot token
-- `GUILD_ID`: (Optional) Specific guild to monitor
 - `LOG_LEVEL`: Logging level (INFO, DEBUG, WARNING, ERROR)
 
 ## Testing the Setup

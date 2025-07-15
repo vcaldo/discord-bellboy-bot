@@ -44,7 +44,6 @@ except ImportError:
 
 # Configuration
 DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
-GUILD_ID = os.getenv('GUILD_ID')
 LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO').upper()
 TTS_PROVIDER = os.getenv('TTS_PROVIDER', 'coqui')  # Default to coqui
 
@@ -164,11 +163,6 @@ class BellboyBot(discord.Client):
 
     def _is_monitoring_guild(self, guild: discord.Guild) -> bool:
         """Check if the bot should monitor this guild."""
-        if GUILD_ID:
-            try:
-                return guild.id == int(GUILD_ID)
-            except ValueError:
-                return True
         return True
 
     @newrelic.agent.function_trace()
