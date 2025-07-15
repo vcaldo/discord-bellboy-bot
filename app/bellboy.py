@@ -36,24 +36,21 @@ else:
 
 # Try to import TTS, but make it optional
 try:
-    from TTS.api import TTS
+    from tts import TTSManager
     TTS_AVAILABLE = True
 except ImportError:
     TTS_AVAILABLE = False
-    TTS = None
+    TTSManager = None
 
 # Configuration
 DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
-GUILD_ID = os.getenv('GUILD_ID')
 LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO').upper()
-TTS_LANGUAGE = os.getenv('TTS_LANGUAGE', 'en')
-TTS_MODEL = os.getenv('TTS_MODEL', f'tts_models/en/ljspeech/fast_pitch')
+TTS_PROVIDER = os.getenv('TTS_PROVIDER', 'coqui')  # Default to coqui
 
 # Constants
 LOGS_DIR = 'logs'
 LOG_DATE_FORMAT = '%Y%m%d'
 LOG_MESSAGE_FORMAT = '%(asctime)s | %(levelname)s | %(message)s'
-TTS_CACHE_SIZE = int(os.getenv('TTS_CACHE_SIZE', '50'))  # Number of TTS files to keep cached
 
 # FFmpeg options for audio playback
 FFMPEG_OPTIONS = {
@@ -115,29 +112,26 @@ class BellboyBot(discord.Client):
         logger.addHandler(console_handler)
 
     def _init_tts(self) -> None:
-        """Initialize Coqui TTS model."""
+        """Initialize TTS manager."""
         # Check if TTS is available
         if not TTS_AVAILABLE:
-            self.logger.warning("Coqui TTS not available - TTS functionality will be disabled")
-            self.logger.info("Install TTS with: pip install TTS")
-            self.tts = None
-            self.tts_cache = {}
+            self.logger.warning("TTS module not available - TTS functionality will be disabled")
+            self.logger.info("Install TTS dependencies with: pip install TTS PyYAML")
+            self.tts_manager = None
             return
 
         try:
-            # Initialize TTS with configurable model
-            self.logger.info(f"Initializing Coqui TTS with model: {TTS_MODEL}")
-            self.tts = TTS(model_name=TTS_MODEL, progress_bar=False)
-            self.logger.info("Coqui TTS initialized successfully")
+            # Initialize TTS manager with configured provider
+            self.logger.info(f"Initializing TTS Manager with provider: {TTS_PROVIDER}")
+            self.tts_manager = TTSManager(provider_name=TTS_PROVIDER)
 
-            # Initialize TTS cache tracking
-            self.tts_cache = {}  # Dictionary to track cached TTS files
+            # Initialize asynchronously - we'll do this in the ready event
+            self.logger.info("TTS Manager created, will initialize on bot ready")
 
         except Exception as e:
-            self.logger.error(f"Failed to initialize Coqui TTS: {e}")
+            self.logger.error(f"Failed to create TTS Manager: {e}")
             self.logger.warning("TTS functionality will be disabled")
-            self.tts = None
-            self.tts_cache = {}
+            self.tts_manager = None
 
     def _safe_guild_name(self, guild: discord.Guild) -> str:
         """Get a safe representation of guild name for logging."""
@@ -169,166 +163,81 @@ class BellboyBot(discord.Client):
 
     def _is_monitoring_guild(self, guild: discord.Guild) -> bool:
         """Check if the bot should monitor this guild."""
-        if GUILD_ID:
-            try:
-                return guild.id == int(GUILD_ID)
-            except ValueError:
-                return True
         return True
 
     @newrelic.agent.function_trace()
-    def create_tts_mp3(self, text: str, output_path: str, speaker: Optional[str] = None) -> bool:
+    async def create_and_play_tts(self, message_type: str, guild: discord.Guild, **kwargs) -> None:
         """
-        Create an MP3 file from text using Coqui TTS.
+        Create a TTS audio from a message type and play it in the current voice channel.
 
         Args:
-            text: The text to convert to speech
-            output_path: Path where the MP3 file will be saved
-            speaker: Speaker ID or name (if supported by the model)
-
-        Returns:
-            bool: True if successful, False otherwise
-        """
-        try:
-            # Record custom metric for TTS requests
-            newrelic.agent.record_custom_metric('Custom/TTS/Requests', 1)
-
-            # Add custom attributes for better debugging
-            newrelic.agent.add_custom_attributes({
-                'tts.text_length': len(text),
-                'tts.output_path': output_path,
-                'tts.speaker': speaker or 'default'
-            })
-
-            # Check if TTS is initialized
-            if self.tts is None:
-                newrelic.agent.record_custom_metric('Custom/TTS/Errors/NotInitialized', 1)
-                self.logger.error("Coqui TTS not initialized")
-                return False
-
-            # Ensure the output directory exists
-            os.makedirs(os.path.dirname(output_path), exist_ok=True)
-
-            # Create a temporary WAV file first
-            with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_wav:
-                temp_wav_path = temp_wav.name
-
-            # Generate speech with Coqui TTS
-            try:
-                with newrelic.agent.FunctionTrace(name='TTS.tts_to_file'):
-                    self.tts.tts_to_file(text=text, file_path=temp_wav_path)
-            except Exception as e:
-                newrelic.agent.record_custom_metric('Custom/TTS/Errors/Generation', 1)
-                newrelic.agent.notice_error()
-                self.logger.error(f"Coqui TTS generation failed: {e}")
-                return False
-
-            # Convert WAV to MP3 using ffmpeg
-            ffmpeg_cmd = [
-                'ffmpeg',
-                '-y',  # Overwrite output file
-                '-i', temp_wav_path,
-                '-codec:a', 'mp3',
-                '-b:a', '128k',
-                output_path
-            ]
-
-            with newrelic.agent.FunctionTrace(name='FFmpeg.wav_to_mp3'):
-                result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True, timeout=30)
-
-            if result.returncode != 0:
-                newrelic.agent.record_custom_metric('Custom/TTS/Errors/FFmpeg', 1)
-                self.logger.error(f"ffmpeg conversion failed: {result.stderr}")
-                return False
-
-            # Clean up temporary WAV file
-            try:
-                os.unlink(temp_wav_path)
-            except OSError:
-                pass
-
-            self.logger.info(f"Coqui TTS MP3 created successfully: {output_path}")
-
-            # Manage TTS cache
-            self._manage_tts_cache(output_path)
-
-            # Record successful TTS generation
-            newrelic.agent.record_custom_metric('Custom/TTS/Success', 1)
-            return True
-
-        except subprocess.TimeoutExpired:
-            newrelic.agent.record_custom_metric('Custom/TTS/Errors/Timeout', 1)
-            newrelic.agent.notice_error()
-            self.logger.error("TTS generation timed out")
-            return False
-        except Exception as e:
-            newrelic.agent.record_custom_metric('Custom/TTS/Errors/General', 1)
-            newrelic.agent.notice_error()
-            self.logger.error(f"Error creating Coqui TTS MP3: {e}")
-            return False
-
-    def _manage_tts_cache(self, new_file_path: str) -> None:
-        """
-        Manage TTS cache to prevent unlimited growth.
-
-        Args:
-            new_file_path: Path to the newly created TTS file
-        """
-        try:
-            # Add new file to cache with current timestamp
-            import time
-            self.tts_cache[new_file_path] = time.time()
-
-            # If cache size exceeds limit, remove oldest files
-            if len(self.tts_cache) > TTS_CACHE_SIZE:
-                # Sort by timestamp and remove oldest files
-                sorted_cache = sorted(self.tts_cache.items(), key=lambda x: x[1])
-                files_to_remove = sorted_cache[:len(self.tts_cache) - TTS_CACHE_SIZE]
-
-                for file_path, _ in files_to_remove:
-                    try:
-                        if os.path.exists(file_path):
-                            os.remove(file_path)
-                        del self.tts_cache[file_path]
-                        self.logger.debug(f"Removed old TTS cache file: {file_path}")
-                    except OSError as e:
-                        self.logger.warning(f"Could not remove TTS cache file {file_path}: {e}")
-
-        except Exception as e:
-            self.logger.error(f"Error managing TTS cache: {e}")
-
-    @newrelic.agent.function_trace()
-    async def create_and_play_tts(self, text: str, guild: discord.Guild, speaker: Optional[str] = None) -> None:
-        """
-        Create a TTS MP3 from text using Coqui TTS and play it in the current voice channel.
-
-        Args:
-            text: The text to convert to speech and play
+            message_type: The type of message (join, leave, move)
             guild: Discord guild where the audio should be played
-            speaker: Speaker ID or name (if supported by the model)
+            **kwargs: Additional parameters for message formatting
         """
         try:
-            # Generate a unique filename for the TTS audio
-            import hashlib
-            text_hash = hashlib.md5(text.encode()).hexdigest()[:8]
-            tts_filename = f"coqui_tts_{text_hash}.mp3"
-            tts_path = f"/app/assets/{tts_filename}"
+            # Check if TTS is available
+            if not self.tts_manager or not self.tts_manager.is_available:
+                self.logger.debug(f"[{self._safe_guild_name(guild)}] TTS not available for message: {message_type}")
+                return
 
-            # Create the TTS MP3 file using Coqui TTS
-            if self.create_tts_mp3(text, tts_path, speaker):
+            # Generate a unique cache path for this message
+            member_id = kwargs.get('member_id', 'unknown')
+            cache_path = self.tts_manager.generate_cache_path(
+                f"{message_type}_{member_id}",
+                prefix=f"msg_{message_type}"
+            )
+
+            # Log TTS request
+            display_name = kwargs.get('display_name', 'Unknown')
+            self.logger.debug(f"[{self._safe_guild_name(guild)}] TTS request: {message_type} for {display_name}")
+
+            # Create the TTS audio
+            success = await self.tts_manager.synthesize_message(message_type, cache_path, **kwargs)
+
+            if success:
                 # Play the generated TTS audio
-                await self.play_notification_audio(tts_path, guild)
-
-                # Optional: Clean up the TTS file after a delay to save space
-                # You might want to keep frequently used TTS files cached
-
+                await self.play_notification_audio(cache_path, guild)
             else:
                 safe_guild_name = self._safe_guild_name(guild)
-                self.logger.error(f"[{safe_guild_name}] Failed to create Coqui TTS for: {text}")
+                self.logger.error(f"[{safe_guild_name}] Failed to create TTS for message type: {message_type}")
 
         except Exception as e:
             safe_guild_name = self._safe_guild_name(guild)
             self.logger.error(f"[{safe_guild_name}] Error in create_and_play_tts: {e}")
+
+    @newrelic.agent.function_trace()
+    async def create_tts_from_text(self, text: str, guild: discord.Guild, **kwargs) -> None:
+        """
+        Create a TTS audio from arbitrary text and play it in the current voice channel.
+
+        Args:
+            text: The text to convert to speech and play
+            guild: Discord guild where the audio should be played
+            **kwargs: Additional parameters for TTS synthesis
+        """
+        try:
+            # Check if TTS is available
+            if not self.tts_manager or not self.tts_manager.is_available:
+                self.logger.debug(f"[{self._safe_guild_name(guild)}] TTS not available for text: {text}")
+                return
+
+            # Generate a unique cache path for this text
+            cache_path = self.tts_manager.generate_cache_path(text, prefix="custom")
+
+            # Create the TTS audio
+            success = await self.tts_manager.synthesize_text(text, cache_path, **kwargs)
+
+            if success:
+                # Play the generated TTS audio
+                await self.play_notification_audio(cache_path, guild)
+            else:
+                safe_guild_name = self._safe_guild_name(guild)
+                self.logger.error(f"[{safe_guild_name}] Failed to create TTS for text: {text}")
+
+        except Exception as e:
+            safe_guild_name = self._safe_guild_name(guild)
+            self.logger.error(f"[{safe_guild_name}] Error in create_tts_from_text: {e}")
 
     async def find_busiest_voice_channel(self, guild: discord.Guild) -> Tuple[Optional[discord.VoiceChannel], int]:
         """
@@ -488,6 +397,42 @@ class BellboyBot(discord.Client):
     async def on_ready(self):
         """Called when the bot is ready."""
         self.logger.info(f'Bot logged in as {self.user} (ID: {self.user.id})')
+
+        # Initialize TTS manager asynchronously with timeout
+        if self.tts_manager:
+            try:
+                import asyncio
+
+                self.logger.info("Initializing TTS Manager (this may take time on first run)...")
+
+                # Add timeout to prevent blocking Discord connection
+                tts_success = await asyncio.wait_for(
+                    self.tts_manager.initialize(),
+                    timeout=300.0  # 5 minutes timeout
+                )
+
+                if tts_success:
+                    self.logger.info(f"TTS Manager initialized successfully with provider: {TTS_PROVIDER}")
+
+                    # Log cache statistics
+                    if self.tts_manager.cache_manager:
+                        cache_stats = self.tts_manager.cache_manager.get_cache_stats()
+                        self.logger.info(f"TTS Cache: {cache_stats['current_files']}/{cache_stats['max_files']} files "
+                                       f"({cache_stats['usage_percent']}%), {cache_stats['total_size_mb']}MB")
+                else:
+                    self.logger.warning("TTS Manager initialization failed - TTS functionality disabled")
+                    self.logger.warning("Bot will continue without voice announcements")
+                    self.tts_manager = None
+
+            except asyncio.TimeoutError:
+                self.logger.error("TTS Manager initialization timed out (5 minutes)")
+                self.logger.warning("TTS functionality disabled - bot will continue without voice announcements")
+                self.tts_manager = None
+            except Exception as e:
+                self.logger.error(f"Error initializing TTS Manager: {e}")
+                self.logger.warning("TTS functionality disabled - bot will continue without voice announcements")
+                self.tts_manager = None
+
         self.logger.info('Monitoring voice channel activity...')
 
         # Check if bot should join any channels on startup
@@ -575,10 +520,7 @@ class BellboyBot(discord.Client):
 
                 self.logger.info(f"[{safe_guild_name}] {username} joined voice channel: {after.channel.name}")
                 # Generate TTS audio for user joining
-                join_message = f"Bem vindo {member.display_name}"
-                tts_audio_path = f"/app/assets/coqui_tts_join_{member.id}.mp3"
-                if self.create_tts_mp3(join_message, tts_audio_path):
-                    await self.play_notification_audio(tts_audio_path, guild)
+                await self.create_and_play_tts('join', guild, display_name=member.display_name, member_id=member.id)
                 await self.join_busiest_channel_if_needed(guild)
 
             # User left a voice channel
@@ -590,11 +532,8 @@ class BellboyBot(discord.Client):
                 })
 
                 self.logger.info(f"[{safe_guild_name}] {username} left voice channel: {before.channel.name}")
-                # Generate TTS audio for user left
-                left_message = f"tchau tchau {member.display_name}"
-                tts_audio_path = f"/app/assets/coqui_tts_left_{member.id}.mp3"
-                if self.create_tts_mp3(left_message, tts_audio_path):
-                    await self.play_notification_audio(tts_audio_path, guild)
+                # Generate TTS audio for user leaving
+                await self.create_and_play_tts('leave', guild, display_name=member.display_name, member_id=member.id)
                 await self.leave_if_empty(guild)
 
             # User moved between voice channels
@@ -607,10 +546,8 @@ class BellboyBot(discord.Client):
                 })
 
                 self.logger.info(f"[{safe_guild_name}] {username} moved from {before.channel.name} to {after.channel.name}")
-                move_message = f"trocou de canal {member.display_name}"
-                tts_audio_path = f"/app/assets/coqui_tts_moved_{member.id}.mp3"
-                if self.create_tts_mp3(move_message, tts_audio_path):
-                    await self.play_notification_audio(tts_audio_path, guild)
+                # Generate TTS audio for user moving
+                await self.create_and_play_tts('move', guild, display_name=member.display_name, member_id=member.id)
                 await self.join_busiest_channel_if_needed(guild)
                 await self.leave_if_empty(guild)
 
