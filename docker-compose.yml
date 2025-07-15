@@ -13,9 +13,7 @@ services:
       - AUTO_JOIN_BUSIEST=${AUTO_JOIN_BUSIEST:-true}
       - AUTO_LEAVE_EMPTY=${AUTO_LEAVE_EMPTY:-true}
       # TTS configuration
-      - TTS_LANGUAGE=${TTS_LANGUAGE:-en}
-      - TTS_MODEL=${TTS_MODEL:-tts_models/en/ljspeech/fast_pitch}
-      - TTS_CACHE_SIZE=${TTS_CACHE_SIZE:-50}
+      - TTS_PROVIDER=${TTS_PROVIDER:-coqui}
       # New Relic monitoring
       - NEW_RELIC_LICENSE_KEY=${NEW_RELIC_LICENSE_KEY:-}
       - NEW_RELIC_APP_NAME=${NEW_RELIC_APP_NAME:-Discord-Bellboy-Bot}
@@ -24,6 +22,8 @@ services:
     volumes:
       - ./logs:/app/logs
       - ./.env:/app/.env:ro
+      - ./tts-config.yaml:/app/tts-config.yaml:ro
+      - tts-cache:/app/assets
     networks:
       - bellboy-network
 
@@ -31,7 +31,9 @@ networks:
   bellboy-network:
     driver: bridge
 
-# Optional: Add a volume for persistent log storage
+# Optional: Add volumes for persistent storage
 volumes:
   logs:
+    driver: local
+  tts-cache:
     driver: local

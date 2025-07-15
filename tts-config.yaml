@@ -1,0 +1,60 @@
+# TTS Provider Configuration
+providers:
+  coqui:
+    name: "Coqui TTS"
+    enabled: true
+    # Fast model for quick initialization (smaller download)
+    model: "tts_models/en/ljspeech/fast_pitch"
+    # Alternative models:
+    # "tts_models/en/ljspeech/fast_pitch" - higher quality but larger download
+    # "tts_models/en/ljspeech/tacotron2-DDC" - faster, smaller download
+    language: "en"
+    settings:
+      progress_bar: false
+      output_format: "mp3"
+      audio_quality: "128k"
+      volume: "1.1"
+    messages:
+      join: "Welcome {display_name}"
+      leave: "Bye bye {display_name}"
+      move: "Moved channels {display_name}"
+
+  # Placeholder for future providers
+  # elevenlabs:
+  #   name: "ElevenLabs"
+  #   enabled: false
+  #   api_key: ""
+  #   model: "eleven_monolingual_v1"
+  #   voice: "Rachel"
+  #   settings:
+  #     stability: 0.75
+  #     similarity_boost: 0.75
+  #     output_format: "mp3"
+  #   messages:
+  #     join: "Welcome {display_name}"
+  #     leave: "Goodbye {display_name}"
+  #     move: "moved channels {display_name}"
+
+  # azure:
+  #   name: "Azure Cognitive Services"
+  #   enabled: false
+  #   subscription_key: ""
+  #   region: "eastus"
+  #   voice: "en-US-JennyNeural"
+  #   settings:
+  #     speech_rate: "0%"
+  #     speech_pitch: "0%"
+  #     output_format: "mp3"
+  #   messages:
+  #     join: "Welcome {display_name}"
+  #     leave: "Goodbye {display_name}"
+  #     move: "moved channels {display_name}"
+
+# Default provider (fallback if TTS_PROVIDER env var is not set)
+default_provider: "coqui"
+
+# Cache settings
+cache:
+  enabled: true
+  max_files: 50
+  directory: "/app/assets"
