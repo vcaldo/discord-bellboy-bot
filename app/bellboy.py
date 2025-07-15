@@ -33,7 +33,7 @@ else:
     print("New Relic license key not found - monitoring disabled")
 
 # Import TTS manager
-from tts import TTSManager
+from tts.tts_manager import TTSManager
 
 # Configuration
 DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
@@ -75,6 +75,16 @@ class BellboyBot(discord.Client):
 
         # Initialize TTS Manager
         self.tts_manager = TTSManager(self.logger)
+
+        # Log TTS provider information
+        if self.tts_manager.is_available:
+            provider_info = self.tts_manager.get_provider_info()
+            self.logger.info(f"TTS Provider initialized: {provider_info['name']}")
+            self.logger.info(f"Supported formats: {provider_info['supported_formats']}")
+        else:
+            self.logger.warning("No TTS providers available - TTS functionality disabled")
+            available_providers = self.tts_manager.list_available_providers()
+            self.logger.info(f"Provider status: {available_providers}")
 
         # Test New Relic transaction
         if NEW_RELIC_LICENSE_KEY:

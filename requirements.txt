@@ -5,9 +5,16 @@ PyNaCl>=1.5.0,<2.0.0
 # New Relic monitoring
 newrelic>=9.0.0,<10.0.0
 
-# Audio dependencies for Coqui TTS
+# Audio dependencies for TTS providers
 numpy>=1.21.0
 soundfile>=0.12.1
 
+# TTS Providers (optional - install based on preference)
 # Coqui TTS - using stable version
 TTS==0.17.8
+
+# Piper TTS - fast, local TTS
+# piper-tts>=1.2.0
+
+# MeloTTS - multilingual TTS
+# melo-tts>=0.1.0
