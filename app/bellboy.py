@@ -17,22 +17,41 @@ import newrelic.agent
 NEW_RELIC_LICENSE_KEY = os.getenv('NEW_RELIC_LICENSE_KEY')
 NEW_RELIC_APP_NAME = os.getenv('NEW_RELIC_APP_NAME', 'Discord-Bellboy-Bot')
 NEW_RELIC_ENVIRONMENT = os.getenv('NEW_RELIC_ENVIRONMENT', 'production')
+NEW_RELIC_CONFIG_FILE = os.getenv('NEW_RELIC_CONFIG_FILE')
+
+# Enhanced New Relic initialization with better debugging
+NEW_RELIC_ENABLED = False
 
 if NEW_RELIC_LICENSE_KEY:
+    print(f"New Relic License Key found: {NEW_RELIC_LICENSE_KEY[:8]}...")
+    print(f"New Relic App Name: {NEW_RELIC_APP_NAME}")
+    print(f"New Relic Environment: {NEW_RELIC_ENVIRONMENT}")
+    print(f"New Relic Config File: {NEW_RELIC_CONFIG_FILE}")
+
     # When using newrelic-admin run-program, the agent is automatically initialized
     # We just need to register the application and verify it's working
     try:
-        app = newrelic.agent.register_application(timeout=10.0)
+        print("Attempting to register New Relic application...")
+        app = newrelic.agent.register_application(timeout=30.0)  # Increased timeout
         if app:
-            print(f"New Relic application registered: {NEW_RELIC_APP_NAME}")
+            print(f"✅ New Relic application registered successfully: {NEW_RELIC_APP_NAME}")
             print(f"New Relic application object: {app}")
+            print(f"New Relic application name: {app.name}")
+            print(f"New Relic application settings: {app.settings}")
+            NEW_RELIC_ENABLED = True
+
+            # Test basic metrics
+            newrelic.agent.record_custom_metric('Custom/Bot/Initialization', 1)
+            print("✅ New Relic test metric recorded successfully")
         else:
-            print("New Relic application registration failed")
+            print("❌ New Relic application registration failed - no application object returned")
     except Exception as e:
-        print(f"New Relic application registration error: {e}")
+        print(f"❌ New Relic application registration error: {e}")
         print("Continuing without New Relic monitoring...")
+        import traceback
+        traceback.print_exc()
 else:
-    print("New Relic license key not found - monitoring disabled")
+    print("❌ New Relic license key not found - monitoring disabled")
 
 # Try to import TTS, but make it optional
 try:
@@ -87,8 +106,32 @@ class BellboyBot(discord.Client):
         self._init_tts()
 
         # Test New Relic transaction
-        if NEW_RELIC_LICENSE_KEY:
+        if NEW_RELIC_ENABLED:
             self._test_newrelic_transaction()
+
+    def _safe_newrelic_metric(self, metric_name: str, value: float = 1.0):
+        """Safely record a New Relic metric with error handling."""
+        if NEW_RELIC_ENABLED:
+            try:
+                newrelic.agent.record_custom_metric(metric_name, value)
+            except Exception as e:
+                self.logger.debug(f"Failed to record New Relic metric {metric_name}: {e}")
+
+    def _safe_newrelic_attributes(self, attributes: dict):
+        """Safely add New Relic custom attributes with error handling."""
+        if NEW_RELIC_ENABLED:
+            try:
+                newrelic.agent.add_custom_attributes(attributes)
+            except Exception as e:
+                self.logger.debug(f"Failed to add New Relic attributes: {e}")
+
+    def _safe_newrelic_error(self):
+        """Safely notice an error to New Relic with error handling."""
+        if NEW_RELIC_ENABLED:
+            try:
+                newrelic.agent.notice_error()
+            except Exception as e:
+                self.logger.debug(f"Failed to notice New Relic error: {e}")
 
     def _setup_logging(self) -> None:
         """Set up logging to file and console."""
@@ -191,10 +234,10 @@ class BellboyBot(discord.Client):
         """
         try:
             # Record custom metric for TTS requests
-            newrelic.agent.record_custom_metric('Custom/TTS/Requests', 1)
+            self._safe_newrelic_metric('Custom/TTS/Requests', 1)
 
             # Add custom attributes for better debugging
-            newrelic.agent.add_custom_attributes({
+            self._safe_newrelic_attributes({
                 'tts.text_length': len(text),
                 'tts.output_path': output_path,
                 'tts.speaker': speaker or 'default'
@@ -202,7 +245,7 @@ class BellboyBot(discord.Client):
 
             # Check if TTS is initialized
             if self.tts is None:
-                newrelic.agent.record_custom_metric('Custom/TTS/Errors/NotInitialized', 1)
+                self._safe_newrelic_metric('Custom/TTS/Errors/NotInitialized', 1)
                 self.logger.error("Coqui TTS not initialized")
                 return False
 
@@ -215,11 +258,14 @@ class BellboyBot(discord.Client):
 
             # Generate speech with Coqui TTS
             try:
-                with newrelic.agent.FunctionTrace(name='TTS.tts_to_file'):
+                if NEW_RELIC_ENABLED:
+                    with newrelic.agent.FunctionTrace(name='TTS.tts_to_file'):
+                        self.tts.tts_to_file(text=text, file_path=temp_wav_path)
+                else:
                     self.tts.tts_to_file(text=text, file_path=temp_wav_path)
             except Exception as e:
-                newrelic.agent.record_custom_metric('Custom/TTS/Errors/Generation', 1)
-                newrelic.agent.notice_error()
+                self._safe_newrelic_metric('Custom/TTS/Errors/Generation', 1)
+                self._safe_newrelic_error()
                 self.logger.error(f"Coqui TTS generation failed: {e}")
                 return False
 
@@ -233,11 +279,14 @@ class BellboyBot(discord.Client):
                 output_path
             ]
 
-            with newrelic.agent.FunctionTrace(name='FFmpeg.wav_to_mp3'):
+            if NEW_RELIC_ENABLED:
+                with newrelic.agent.FunctionTrace(name='FFmpeg.wav_to_mp3'):
+                    result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True, timeout=30)
+            else:
                 result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True, timeout=30)
 
             if result.returncode != 0:
-                newrelic.agent.record_custom_metric('Custom/TTS/Errors/FFmpeg', 1)
+                self._safe_newrelic_metric('Custom/TTS/Errors/FFmpeg', 1)
                 self.logger.error(f"ffmpeg conversion failed: {result.stderr}")
                 return False
 
@@ -253,17 +302,17 @@ class BellboyBot(discord.Client):
             self._manage_tts_cache(output_path)
 
             # Record successful TTS generation
-            newrelic.agent.record_custom_metric('Custom/TTS/Success', 1)
+            self._safe_newrelic_metric('Custom/TTS/Success', 1)
             return True
 
         except subprocess.TimeoutExpired:
-            newrelic.agent.record_custom_metric('Custom/TTS/Errors/Timeout', 1)
-            newrelic.agent.notice_error()
+            self._safe_newrelic_metric('Custom/TTS/Errors/Timeout', 1)
+            self._safe_newrelic_error()
             self.logger.error("TTS generation timed out")
             return False
         except Exception as e:
-            newrelic.agent.record_custom_metric('Custom/TTS/Errors/General', 1)
-            newrelic.agent.notice_error()
+            self._safe_newrelic_metric('Custom/TTS/Errors/General', 1)
+            self._safe_newrelic_error()
             self.logger.error(f"Error creating Coqui TTS MP3: {e}")
             return False
 
@@ -360,30 +409,30 @@ class BellboyBot(discord.Client):
         """
         try:
             # Add custom attributes for monitoring
-            newrelic.agent.add_custom_attributes({
+            self._safe_newrelic_attributes({
                 'audio.path': audio_path,
                 'guild.id': guild.id,
                 'guild.name': self._safe_guild_name(guild)
             })
 
             # Record audio playback attempt
-            newrelic.agent.record_custom_metric('Custom/Audio/PlaybackAttempts', 1)
+            self._safe_newrelic_metric('Custom/Audio/PlaybackAttempts', 1)
 
             # Check if bot is connected to a voice channel
             if not guild.voice_client or not guild.voice_client.is_connected():
-                newrelic.agent.record_custom_metric('Custom/Audio/NotConnected', 1)
+                self._safe_newrelic_metric('Custom/Audio/NotConnected', 1)
                 return
 
             # Check if audio file exists
             if not os.path.exists(audio_path):
-                newrelic.agent.record_custom_metric('Custom/Audio/FileNotFound', 1)
+                self._safe_newrelic_metric('Custom/Audio/FileNotFound', 1)
                 safe_guild_name = self._safe_guild_name(guild)
                 self.logger.warning(f"[{safe_guild_name}] Audio file not found: {audio_path}")
                 return
 
             # Don't interrupt if already playing audio
             if guild.voice_client.is_playing():
-                newrelic.agent.record_custom_metric('Custom/Audio/AlreadyPlaying', 1)
+                self._safe_newrelic_metric('Custom/Audio/AlreadyPlaying', 1)
                 return
 
             # Create audio source and play
@@ -396,22 +445,22 @@ class BellboyBot(discord.Client):
 
                 safe_guild_name = self._safe_guild_name(guild)
                 self.logger.debug(f"[{safe_guild_name}] Playing notification audio")
-                newrelic.agent.record_custom_metric('Custom/Audio/PlaybackSuccess', 1)
+                self._safe_newrelic_metric('Custom/Audio/PlaybackSuccess', 1)
 
             except discord.errors.ClientException as e:
-                newrelic.agent.record_custom_metric('Custom/Audio/DiscordClientError', 1)
-                newrelic.agent.notice_error()
+                self._safe_newrelic_metric('Custom/Audio/DiscordClientError', 1)
+                self._safe_newrelic_error()
                 safe_guild_name = self._safe_guild_name(guild)
                 self.logger.error(f"[{safe_guild_name}] Discord client error playing audio: {e}")
             except Exception as e:
-                newrelic.agent.record_custom_metric('Custom/Audio/FFmpegError', 1)
-                newrelic.agent.notice_error()
+                self._safe_newrelic_metric('Custom/Audio/FFmpegError', 1)
+                self._safe_newrelic_error()
                 safe_guild_name = self._safe_guild_name(guild)
                 self.logger.error(f"[{safe_guild_name}] FFmpeg error playing audio: {e}")
 
         except Exception as e:
-            newrelic.agent.record_custom_metric('Custom/Audio/GeneralError', 1)
-            newrelic.agent.notice_error()
+            self._safe_newrelic_metric('Custom/Audio/GeneralError', 1)
+            self._safe_newrelic_error()
             safe_guild_name = self._safe_guild_name(guild)
             self.logger.error(f"[{safe_guild_name}] Error playing notification audio: {e}")
 
@@ -497,7 +546,7 @@ class BellboyBot(discord.Client):
         """Check all guilds for voice channels with users and join the busiest one if needed."""
         try:
             # Record startup voice channel check
-            newrelic.agent.record_custom_metric('Custom/Bot/StartupChannelCheck', 1)
+            self._safe_newrelic_metric('Custom/Bot/StartupChannelCheck', 1)
 
             for guild in self.guilds:
                 try:
@@ -515,10 +564,10 @@ class BellboyBot(discord.Client):
                         try:
                             await busiest_channel.connect()
                             self.logger.info(f"[{safe_guild_name}] Bot joined channel on startup: {busiest_channel.name} ({max_members} members)")
-                            newrelic.agent.record_custom_metric('Custom/Bot/StartupChannelJoin', 1)
+                            self._safe_newrelic_metric('Custom/Bot/StartupChannelJoin', 1)
                         except discord.ClientException as e:
                             self.logger.error(f"[{safe_guild_name}] Failed to join channel on startup: {e}")
-                            newrelic.agent.record_custom_metric('Custom/Bot/StartupChannelJoinError', 1)
+                            self._safe_newrelic_metric('Custom/Bot/StartupChannelJoinError', 1)
                     elif busiest_channel and max_members > 0:
                         self.logger.info(f"[{safe_guild_name}] Found active channel on startup: {busiest_channel.name} ({max_members} members) - already connected")
                     else:
@@ -527,18 +576,18 @@ class BellboyBot(discord.Client):
                 except Exception as e:
                     safe_guild_name = self._safe_guild_name(guild)
                     self.logger.error(f"[{safe_guild_name}] Error checking voice channels on startup: {e}")
-                    newrelic.agent.notice_error()
+                    self._safe_newrelic_error()
 
         except Exception as e:
             self.logger.error(f"Error during startup voice channel check: {e}")
-            newrelic.agent.notice_error()
+            self._safe_newrelic_error()
 
     @newrelic.agent.background_task(name='Discord.on_voice_state_update')
     async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
         """Called when a user's voice state changes."""
         try:
             # Add custom attributes for monitoring
-            newrelic.agent.add_custom_attributes({
+            self._safe_newrelic_attributes({
                 'guild.id': member.guild.id,
                 'guild.name': self._safe_guild_name(member.guild),
                 'member.id': member.id,
@@ -547,7 +596,7 @@ class BellboyBot(discord.Client):
             })
 
             # Record voice activity metrics
-            newrelic.agent.record_custom_metric('Custom/Discord/VoiceStateUpdates', 1)
+            self._safe_newrelic_metric('Custom/Discord/VoiceStateUpdates', 1)
 
             # Skip if not monitoring this guild
             if not self._is_monitoring_guild(member.guild):
@@ -555,11 +604,11 @@ class BellboyBot(discord.Client):
 
             # Skip if it's not a human member (bots, apps, system users, etc.)
             if not self._is_human_member(member):
-                newrelic.agent.record_custom_metric('Custom/Discord/BotVoiceActivity', 1)
+                self._safe_newrelic_metric('Custom/Discord/BotVoiceActivity', 1)
                 return
 
             # Record human voice activity
-            newrelic.agent.record_custom_metric('Custom/Discord/HumanVoiceActivity', 1)
+            self._safe_newrelic_metric('Custom/Discord/HumanVoiceActivity', 1)
 
             username = self._format_member_info(member)
             safe_guild_name = self._safe_guild_name(member.guild)
@@ -567,8 +616,8 @@ class BellboyBot(discord.Client):
 
             # User joined a voice channel
             if before.channel is None and after.channel is not None:
-                newrelic.agent.record_custom_metric('Custom/Discord/UserJoined', 1)
-                newrelic.agent.add_custom_attributes({
+                self._safe_newrelic_metric('Custom/Discord/UserJoined', 1)
+                self._safe_newrelic_attributes({
                     'action': 'joined',
                     'channel.name': after.channel.name
                 })
@@ -583,8 +632,8 @@ class BellboyBot(discord.Client):
 
             # User left a voice channel
             elif before.channel is not None and after.channel is None:
-                newrelic.agent.record_custom_metric('Custom/Discord/UserLeft', 1)
-                newrelic.agent.add_custom_attributes({
+                self._safe_newrelic_metric('Custom/Discord/UserLeft', 1)
+                self._safe_newrelic_attributes({
                     'action': 'left',
                     'channel.name': before.channel.name
                 })
@@ -599,8 +648,8 @@ class BellboyBot(discord.Client):
 
             # User moved between voice channels
             elif before.channel is not None and after.channel is not None and before.channel != after.channel:
-                newrelic.agent.record_custom_metric('Custom/Discord/UserMoved', 1)
-                newrelic.agent.add_custom_attributes({
+                self._safe_newrelic_metric('Custom/Discord/UserMoved', 1)
+                self._safe_newrelic_attributes({
                     'action': 'moved',
                     'from_channel.name': before.channel.name,
                     'to_channel.name': after.channel.name
@@ -615,8 +664,8 @@ class BellboyBot(discord.Client):
                 await self.leave_if_empty(guild)
 
         except Exception as e:
-            newrelic.agent.record_custom_metric('Custom/Discord/VoiceStateUpdateErrors', 1)
-            newrelic.agent.notice_error()
+            self._safe_newrelic_metric('Custom/Discord/VoiceStateUpdateErrors', 1)
+            self._safe_newrelic_error()
             safe_guild_name = self._safe_guild_name(member.guild)
             self.logger.error(f"[{safe_guild_name}] Error in voice state update: {e}")
 
@@ -624,8 +673,8 @@ class BellboyBot(discord.Client):
     async def on_error(self, event, *args, **kwargs):
         """Called when an error occurs."""
         # Record error metrics in New Relic
-        newrelic.agent.record_custom_metric('Custom/Discord/Errors', 1)
-        newrelic.agent.notice_error()
+        self._safe_newrelic_metric('Custom/Discord/Errors', 1)
+        self._safe_newrelic_error()
 
         self.logger.error(f'An error occurred in event {event}', exc_info=True)
 
@@ -653,14 +702,14 @@ class BellboyBot(discord.Client):
     def _test_newrelic_transaction(self):
         """Test function to verify New Relic is working."""
         try:
-            newrelic.agent.record_custom_metric('Custom/Bot/TestTransaction', 1)
-            newrelic.agent.add_custom_attributes({
+            self._safe_newrelic_metric('Custom/Bot/TestTransaction', 1)
+            self._safe_newrelic_attributes({
                 'test.status': 'success',
                 'test.timestamp': datetime.now().isoformat()
             })
-            self.logger.info("New Relic test transaction recorded successfully")
+            self.logger.info("✅ New Relic test transaction recorded successfully")
         except Exception as e:
-            self.logger.error(f"New Relic test transaction failed: {e}")
+            self.logger.error(f"❌ New Relic test transaction failed: {e}")
 
 @newrelic.agent.background_task(name='Discord.Bot.Main')
 def main():
@@ -670,27 +719,34 @@ def main():
         print("Error: DISCORD_TOKEN is required but not set in environment variables or .env file")
         return
 
+    # Print New Relic status
+    print(f"New Relic Status: {'✅ ENABLED' if NEW_RELIC_ENABLED else '❌ DISABLED'}")
+
     # Create and run the bot
     bot = BellboyBot()
 
     try:
         # Record bot startup
-        newrelic.agent.record_custom_metric('Custom/Bot/Startup', 1)
-        newrelic.agent.add_custom_attributes({
-            'bot.environment': NEW_RELIC_ENVIRONMENT,
-            'bot.app_name': NEW_RELIC_APP_NAME
-        })
+        if NEW_RELIC_ENABLED:
+            newrelic.agent.record_custom_metric('Custom/Bot/Startup', 1)
+            newrelic.agent.add_custom_attributes({
+                'bot.environment': NEW_RELIC_ENVIRONMENT,
+                'bot.app_name': NEW_RELIC_APP_NAME
+            })
         bot.run(DISCORD_TOKEN)
     except discord.LoginFailure:
-        newrelic.agent.record_custom_metric('Custom/Bot/LoginFailure', 1)
-        newrelic.agent.notice_error()
+        if NEW_RELIC_ENABLED:
+            newrelic.agent.record_custom_metric('Custom/Bot/LoginFailure', 1)
+            newrelic.agent.notice_error()
         print("Error: Invalid Discord token. Please check your DISCORD_TOKEN in .env file.")
     except KeyboardInterrupt:
-        newrelic.agent.record_custom_metric('Custom/Bot/ManualShutdown', 1)
+        if NEW_RELIC_ENABLED:
+            newrelic.agent.record_custom_metric('Custom/Bot/ManualShutdown', 1)
         print("Bot shutdown requested by user.")
     except Exception as e:
-        newrelic.agent.record_custom_metric('Custom/Bot/FatalError', 1)
-        newrelic.agent.notice_error()
+        if NEW_RELIC_ENABLED:
+            newrelic.agent.record_custom_metric('Custom/Bot/FatalError', 1)
+            newrelic.agent.notice_error()
         print(f"Error running bot: {e}")
         logging.getLogger('bellboy').error(f"Fatal error running bot: {e}", exc_info=True)
 

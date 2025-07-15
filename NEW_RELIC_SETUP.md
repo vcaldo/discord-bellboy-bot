@@ -101,11 +101,77 @@ After deployment, view your bot's performance at:
 
 ## Troubleshooting
 
-1. **No data appearing**: Verify your license key and check logs for New Relic initialization messages
+### No Transactions Appearing
 
-2. **Missing custom metrics**: Ensure the bot is processing voice activities to generate metrics
+If you see the APM application but no transactions/throughput:
 
-3. **High error rates**: Check the "Errors" section in New Relic APM for detailed error analysis
+1. **Verify License Key**:
+   ```bash
+   # Check if your license key is set correctly
+   echo $NEW_RELIC_LICENSE_KEY
+   # Should start with "NRAL-"
+   ```
+
+2. **Check Agent Initialization**:
+   ```bash
+   # Look for these messages in bot startup logs
+   docker-compose logs bellboy-bot | grep -i "new relic"
+
+   # You should see:
+   # ✅ New Relic application registered: Discord-Bellboy-Bot
+   # ✅ New Relic test metric recorded successfully
+   ```
+
+3. **Enable Debug Logging**:
+   Add to your `.env` file:
+   ```bash
+   NEW_RELIC_LOG_LEVEL=debug
+   NEW_RELIC_LOG_FILE=stderr
+   ```
+
+4. **Test New Relic Configuration**:
+   ```bash
+   # Run the test script
+   python test_newrelic.py
+
+   # Or test inside Docker container
+   docker-compose exec bellboy-bot bash check_newrelic.sh
+   ```
+
+5. **Common Issues**:
+   - **Invalid License Key**: Must start with "NRAL-" (not the older format)
+   - **Network Issues**: Container must reach `collector.newrelic.com`
+   - **Environment Variables**: Check `.env` file is properly loaded
+   - **Container Restart**: Agent needs clean restart after config changes
+
+6. **Force Activity**:
+   - Join/leave voice channels in Discord to generate transactions
+   - Each voice activity creates several New Relic transactions
+   - Check New Relic dashboard 2-3 minutes after activity
+
+### Expected New Relic Data
+
+Once working, you should see:
+- **Transactions**: `Discord.on_voice_state_update`, `Discord.Bot.Main`
+- **Custom Metrics**: `Custom/Discord/*`, `Custom/TTS/*`, `Custom/Audio/*`
+- **Errors**: Automatic error capture with stack traces
+- **Attributes**: Guild info, user info, channel names
+
+### Debug Commands
+
+```bash
+# Check container status
+docker-compose ps
+
+# View real-time logs
+docker-compose logs -f bellboy-bot
+
+# Run New Relic test inside container
+docker-compose exec bellboy-bot python /app/test_newrelic.py
+
+# Check environment variables
+docker-compose exec bellboy-bot env | grep NEW_RELIC
+```
 
 ## Privacy and Security
 

@@ -16,11 +16,14 @@ services:
       - TTS_LANGUAGE=${TTS_LANGUAGE:-en}
       - TTS_MODEL=${TTS_MODEL:-tts_models/en/ljspeech/fast_pitch}
       - TTS_CACHE_SIZE=${TTS_CACHE_SIZE:-50}
-      # New Relic monitoring
-      - NEW_RELIC_LICENSE_KEY=${NEW_RELIC_LICENSE_KEY:-}
+      # New Relic monitoring - IMPORTANT: Make sure these are set in your .env file
+      - NEW_RELIC_LICENSE_KEY=${NEW_RELIC_LICENSE_KEY}
       - NEW_RELIC_APP_NAME=${NEW_RELIC_APP_NAME:-Discord-Bellboy-Bot}
       - NEW_RELIC_ENVIRONMENT=${NEW_RELIC_ENVIRONMENT:-production}
       - NEW_RELIC_CONFIG_FILE=/app/newrelic.ini
+      # New Relic debugging
+      - NEW_RELIC_LOG_LEVEL=${NEW_RELIC_LOG_LEVEL:-info}
+      - NEW_RELIC_LOG_FILE=${NEW_RELIC_LOG_FILE:-stderr}
     volumes:
       - ./logs:/app/logs
       - ./.env:/app/.env:ro
