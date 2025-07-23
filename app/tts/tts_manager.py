@@ -221,6 +221,21 @@ class TTSCacheManager:
         self.logger.debug(f"Added file to cache: {os.path.basename(file_path)} (total cached: {len(self.cache)})")
         self._cleanup_if_needed()
 
+    def invalidate_file(self, file_path: str) -> bool:
+        """Remove a file from cache and filesystem."""
+        try:
+            if os.path.exists(file_path):
+                os.remove(file_path)
+                self.logger.debug(f"Invalidated cache file: {os.path.basename(file_path)}")
+
+            if file_path in self.cache:
+                del self.cache[file_path]
+
+            return True
+        except OSError as e:
+            self.logger.warning(f"Could not invalidate cache file {os.path.basename(file_path)}: {e}")
+            return False
+
     def _cleanup_if_needed(self) -> None:
         """Clean up old cache files if limit exceeded."""
         max_files = self.config.get('max_files', 50)
@@ -414,10 +429,14 @@ class TTSManager:
         try:
             text = self.provider.get_message(message_type, **kwargs)
 
-            # Check if file already exists (cached)
+            # Check if file exists and validate it matches expected text
             if os.path.exists(output_path):
-                self.logger.info(f"Using cached TTS file: {os.path.basename(output_path)} for message '{message_type}'")
-                return True
+                if self.validate_cache_file(text, output_path):
+                    self.logger.info(f"Using cached TTS file: {os.path.basename(output_path)} for message '{message_type}'")
+                    return True
+                else:
+                    self.logger.info(f"Cache file invalid for message '{message_type}', regenerating...")
+                    self.cache_manager.invalidate_file(output_path)
 
             # Generate new TTS audio
             self.logger.info(f"Generating new TTS audio for message '{message_type}': '{text}'")
@@ -442,10 +461,14 @@ class TTSManager:
             return False
 
         try:
-            # Check if file already exists (cached)
+            # Check if file exists and validate it matches expected text
             if os.path.exists(output_path):
-                self.logger.info(f"Using cached TTS file: {os.path.basename(output_path)} for text: '{text[:50]}{'...' if len(text) > 50 else ''}'")
-                return True
+                if self.validate_cache_file(text, output_path):
+                    self.logger.info(f"Using cached TTS file: {os.path.basename(output_path)} for text: '{text[:50]}{'...' if len(text) > 50 else ''}'")
+                    return True
+                else:
+                    self.logger.info(f"Cache file invalid for text, regenerating...")
+                    self.cache_manager.invalidate_file(output_path)
 
             # Generate new TTS audio
             self.logger.info(f"Generating new TTS audio for text: '{text[:50]}{'...' if len(text) > 50 else ''}'")
@@ -466,9 +489,36 @@ class TTSManager:
     def generate_cache_path(self, text: str, prefix: str = "tts", suffix: str = ".mp3") -> str:
         """Generate a cache path for TTS audio."""
         cache_dir = self.cache_manager.config.get('directory', '/app/assets')
-        text_hash = hashlib.md5(text.encode()).hexdigest()[:8]
+        # Use full hash for better collision resistance
+        text_hash = hashlib.md5(text.encode()).hexdigest()
         filename = f"{prefix}_{self.provider_name}_{text_hash}{suffix}"
         return os.path.join(cache_dir, filename)
+
+    def validate_cache_file(self, expected_text: str, file_path: str) -> bool:
+        """Validate that a cached file matches the expected text."""
+        if not os.path.exists(file_path):
+            return False
+
+        # Extract hash from filename
+        filename = os.path.basename(file_path)
+        try:
+            # Expected format: prefix_provider_hash.extension
+            parts = filename.split('_')
+            if len(parts) < 3:
+                return False
+
+            # Get hash part (remove extension)
+            hash_with_ext = parts[2]
+            cached_hash = hash_with_ext.split('.')[0]
+
+            # Calculate expected hash
+            expected_hash = hashlib.md5(expected_text.encode()).hexdigest()
+
+            return cached_hash == expected_hash
+
+        except (IndexError, AttributeError):
+            self.logger.warning(f"Invalid cache filename format: {filename}")
+            return False
 
     @property
     def is_available(self) -> bool:
