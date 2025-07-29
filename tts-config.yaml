@@ -13,7 +13,7 @@ providers:
       progress_bar: false
       output_format: "mp3"
       audio_quality: "128k"
-      volume: "1.1"
+      volume: "1.2"
     messages:
       join: "Bem Vindo {display_name}"
       leave: "Adeus {display_name}"
