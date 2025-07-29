@@ -86,7 +86,7 @@ class BellboyBot(discord.Client):
 
         # Add presence detection state tracking
         self.last_channel_switch = {}  # guild_id -> timestamp
-        self.channel_switch_cooldown = 30.0  # seconds
+        self.channel_switch_cooldown = 10.0  # seconds
         self.member_join_debounce = {}  # guild_id -> timestamp
         self.debounce_delay = 2.0  # seconds
 
