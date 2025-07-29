@@ -3,6 +3,7 @@ import logging
 import os
 import subprocess
 import tempfile
+import asyncio
 from datetime import datetime
 from typing import Optional, Tuple
 from dotenv import load_dotenv
@@ -83,6 +84,12 @@ class BellboyBot(discord.Client):
         # Initialize Coqui TTS
         self._init_tts()
 
+        # Add presence detection state tracking
+        self.last_channel_switch = {}  # guild_id -> timestamp
+        self.channel_switch_cooldown = 10.0  # seconds
+        self.member_join_debounce = {}  # guild_id -> timestamp
+        self.debounce_delay = 2.0  # seconds
+
         # Test New Relic transaction
         if NEW_RELIC_LICENSE_KEY:
             self._test_newrelic_transaction()
@@ -157,12 +164,86 @@ class BellboyBot(discord.Client):
         # Filter out bots, applications, and the bot itself
         human_members = [member for member in channel.members if self._is_human_member(member)]
 
-        member_names = [m.display_name for m in human_members]
-        self.logger.debug(f"Channel '{channel.name}' has {len(human_members)} human members: {member_names}")
+        # Enhanced logging with activity information
+        if self.logger.isEnabledFor(logging.DEBUG):
+            member_info = []
+            for member in human_members:
+                status_info = ""
+                if hasattr(member.voice, 'self_deaf') and member.voice.self_deaf:
+                    status_info += "[deaf]"
+                if hasattr(member.voice, 'self_mute') and member.voice.self_mute:
+                    status_info += "[muted]"
+                if hasattr(member, 'status'):
+                    status_info += f"[{member.status}]"
+
+                member_info.append(f"{member.display_name}{status_info}")
+
+            self.logger.debug(f"Channel '{channel.name}' has {len(human_members)} human members: {member_info}")
+
         return len(human_members)
+
+    def _count_active_members(self, channel: discord.VoiceChannel) -> Tuple[int, int]:
+        """
+        Count human members and how many appear to be actively participating.
+
+        Returns:
+            Tuple of (total_humans, active_humans)
+        """
+        if channel is None:
+            return 0, 0
+
+        total_humans = 0
+        active_humans = 0
+
+        for member in channel.members:
+            if not self._is_human_member(member):
+                continue
+
+            total_humans += 1
+
+            # Consider member active if they're not deafened and not appear to be AFK
+            is_active = True
+
+            if hasattr(member.voice, 'self_deaf') and member.voice.self_deaf:
+                is_active = False
+
+            # Check if member has been inactive (this is a simplified check)
+            if hasattr(member, 'status') and member.status == discord.Status.idle:
+                is_active = False
+
+            if is_active:
+                active_humans += 1
+
+        return total_humans, active_humans
 
     def _is_monitoring_guild(self, guild: discord.Guild) -> bool:
         """Check if the bot should monitor this guild."""
+        return True
+
+    def _should_switch_channels(self, guild: discord.Guild) -> bool:
+        """Check if enough time has passed since last channel switch to avoid rapid switching."""
+        now = datetime.now().timestamp()
+        last_switch = self.last_channel_switch.get(guild.id, 0)
+
+        if now - last_switch < self.channel_switch_cooldown:
+            self.logger.debug(f"[{self._safe_guild_name(guild)}] Channel switch on cooldown for {self.channel_switch_cooldown - (now - last_switch):.1f}s")
+            return False
+
+        return True
+
+    def _mark_channel_switch(self, guild: discord.Guild) -> None:
+        """Mark that a channel switch occurred for this guild."""
+        self.last_channel_switch[guild.id] = datetime.now().timestamp()
+
+    def _should_process_member_change(self, guild: discord.Guild) -> bool:
+        """Check if we should process member changes or if we're in debounce period."""
+        now = datetime.now().timestamp()
+        last_change = self.member_join_debounce.get(guild.id, 0)
+
+        if now - last_change < self.debounce_delay:
+            return False
+
+        self.member_join_debounce[guild.id] = now
         return True
 
     @newrelic.agent.function_trace()
@@ -241,22 +322,67 @@ class BellboyBot(discord.Client):
 
     async def find_busiest_voice_channel(self, guild: discord.Guild) -> Tuple[Optional[discord.VoiceChannel], int]:
         """
-        Find the voice channel with the most human members.
+        Find the voice channel with the most human members using weighted scoring.
 
         Returns:
             Tuple of (busiest_channel, member_count).
             Returns (None, 0) if no channels have members.
         """
-        busiest_channel = None
+        best_channel = None
+        max_score = 0
         max_members = 0
 
         for channel in guild.voice_channels:
             member_count = self._count_human_members(channel)
-            if member_count > max_members:
-                max_members = member_count
-                busiest_channel = channel
 
-        return busiest_channel, max_members
+            if member_count == 0:
+                continue
+
+            # Calculate weighted score based on multiple factors
+            score = member_count
+
+            # Bonus for channels with more diverse activity
+            active_members = 0
+            speaking_members = 0
+
+            for member in channel.members:
+                if not self._is_human_member(member):
+                    continue
+
+                # Check if member is likely active (not just idling)
+                if hasattr(member.voice, 'self_deaf') and not member.voice.self_deaf:
+                    active_members += 1
+
+                # Bonus for members who are speaking or have spoken recently
+                if hasattr(member.voice, 'self_mute') and not member.voice.self_mute:
+                    speaking_members += 1
+
+            # Apply bonuses
+            if active_members > 0:
+                score += active_members * 0.2  # Small bonus for active members
+
+            if speaking_members > 0:
+                score += speaking_members * 0.5  # Larger bonus for speaking members
+
+            # Prefer channels that aren't overcrowded (sweet spot around 3-8 people)
+            if 3 <= member_count <= 8:
+                score += 1  # Small bonus for optimal size
+            elif member_count > 15:
+                score -= 0.5  # Small penalty for very crowded channels
+
+            # Slight preference for staying in current channel to avoid unnecessary moves
+            if (hasattr(guild, 'voice_client') and guild.voice_client and
+                guild.voice_client.channel == channel):
+                score += 0.3  # Small bonus to reduce channel hopping
+
+            self.logger.debug(f"Channel '{channel.name}': {member_count} members, score: {score:.2f}")
+
+            if score > max_score:
+                max_score = score
+                best_channel = channel
+                max_members = member_count
+
+        return best_channel, max_members
 
     @newrelic.agent.function_trace()
     async def play_notification_audio(self, audio_path: str, guild: discord.Guild) -> None:
@@ -278,9 +404,22 @@ class BellboyBot(discord.Client):
             # Record audio playback attempt
             newrelic.agent.record_custom_metric('Custom/Audio/PlaybackAttempts', 1)
 
-            # Check if bot is connected to a voice channel
-            if not guild.voice_client or not guild.voice_client.is_connected():
+            # Check if bot is connected to a voice channel with robust checking
+            if not guild.voice_client:
                 newrelic.agent.record_custom_metric('Custom/Audio/NotConnected', 1)
+                self.logger.debug(f"[{self._safe_guild_name(guild)}] No voice client available for audio playback")
+                return
+
+            # Additional connection state checks
+            if not guild.voice_client.is_connected():
+                newrelic.agent.record_custom_metric('Custom/Audio/NotConnected', 1)
+                self.logger.debug(f"[{self._safe_guild_name(guild)}] Voice client not connected for audio playback")
+                return
+
+            # Check if the voice client is in a valid state
+            if hasattr(guild.voice_client, 'channel') and guild.voice_client.channel is None:
+                newrelic.agent.record_custom_metric('Custom/Audio/InvalidState', 1)
+                self.logger.debug(f"[{self._safe_guild_name(guild)}] Voice client in invalid state (no channel)")
                 return
 
             # Check if audio file exists
@@ -293,18 +432,24 @@ class BellboyBot(discord.Client):
             # Don't interrupt if already playing audio
             if guild.voice_client.is_playing():
                 newrelic.agent.record_custom_metric('Custom/Audio/AlreadyPlaying', 1)
+                self.logger.debug(f"[{self._safe_guild_name(guild)}] Audio already playing, skipping")
                 return
 
-            # Create audio source and play
+            # Create audio source and play with better error handling
             try:
                 audio_source = discord.FFmpegPCMAudio(audio_path, **FFMPEG_OPTIONS)
-                guild.voice_client.play(
-                    audio_source,
-                    after=lambda e: self.logger.error(f'Audio player error: {e}') if e else None
-                )
+
+                def audio_finished_callback(error):
+                    if error:
+                        self.logger.error(f'[{self._safe_guild_name(guild)}] Audio player error: {error}')
+                        newrelic.agent.record_custom_metric('Custom/Audio/PlaybackError', 1)
+                    else:
+                        self.logger.debug(f'[{self._safe_guild_name(guild)}] Audio playback completed successfully')
+
+                guild.voice_client.play(audio_source, after=audio_finished_callback)
 
                 safe_guild_name = self._safe_guild_name(guild)
-                self.logger.debug(f"[{safe_guild_name}] Playing notification audio")
+                self.logger.debug(f"[{safe_guild_name}] Playing notification audio: {os.path.basename(audio_path)}")
                 newrelic.agent.record_custom_metric('Custom/Audio/PlaybackSuccess', 1)
 
             except discord.errors.ClientException as e:
@@ -312,6 +457,12 @@ class BellboyBot(discord.Client):
                 newrelic.agent.notice_error()
                 safe_guild_name = self._safe_guild_name(guild)
                 self.logger.error(f"[{safe_guild_name}] Discord client error playing audio: {e}")
+
+                # Try to reconnect if the error suggests connection issues
+                if "not connected" in str(e).lower() or "invalid" in str(e).lower():
+                    self.logger.info(f"[{safe_guild_name}] Attempting to rejoin voice channel after connection error")
+                    await self.join_busiest_channel_if_needed(guild)
+
             except Exception as e:
                 newrelic.agent.record_custom_metric('Custom/Audio/FFmpegError', 1)
                 newrelic.agent.notice_error()
@@ -333,39 +484,112 @@ class BellboyBot(discord.Client):
             if not busiest_channel or max_members == 0:
                 return
 
+            safe_guild_name = self._safe_guild_name(guild)
+
             # If bot is not connected, join the busiest channel
             if not guild.voice_client:
-                await busiest_channel.connect()
-                safe_guild_name = self._safe_guild_name(guild)
-                self.logger.info(f"[{safe_guild_name}] Bot joined busiest channel: {busiest_channel.name} ({max_members} members)")
-                return
+                try:
+                    self.logger.debug(f"[{safe_guild_name}] Attempting to join voice channel: {busiest_channel.name}")
+                    await busiest_channel.connect(timeout=30.0, reconnect=True)
+                    self.logger.info(f"[{safe_guild_name}] Bot joined busiest channel: {busiest_channel.name} ({max_members} members)")
+                    self._mark_channel_switch(guild)  # Mark the switch
+                    newrelic.agent.record_custom_metric('Custom/Voice/ChannelJoin', 1)
+                    return
+                except asyncio.TimeoutError:
+                    self.logger.error(f"[{safe_guild_name}] Timeout joining voice channel: {busiest_channel.name}")
+                    newrelic.agent.record_custom_metric('Custom/Voice/JoinTimeout', 1)
+                    return
+                except discord.ClientException as e:
+                    self.logger.error(f"[{safe_guild_name}] Discord client error joining channel {busiest_channel.name}: {e}")
+                    newrelic.agent.record_custom_metric('Custom/Voice/JoinError', 1)
+                    return
 
-            # If bot is connected but not in the busiest channel, move there
+            # Check if voice client is still valid
+            if not guild.voice_client.is_connected():
+                self.logger.warning(f"[{safe_guild_name}] Voice client exists but not connected, attempting to reconnect")
+                try:
+                    await guild.voice_client.disconnect(force=True)
+                    await asyncio.sleep(1.0)  # Brief pause before reconnecting
+                    await busiest_channel.connect(timeout=30.0, reconnect=True)
+                    self.logger.info(f"[{safe_guild_name}] Bot reconnected to channel: {busiest_channel.name}")
+                    self._mark_channel_switch(guild)  # Mark the switch
+                    newrelic.agent.record_custom_metric('Custom/Voice/Reconnect', 1)
+                    return
+                except Exception as reconnect_error:
+                    self.logger.error(f"[{safe_guild_name}] Failed to reconnect to voice: {reconnect_error}")
+                    newrelic.agent.record_custom_metric('Custom/Voice/ReconnectError', 1)
+                    return
+
+            # If bot is connected but not in the busiest channel, check if we should move
             current_channel = guild.voice_client.channel
             if current_channel != busiest_channel:
-                await guild.voice_client.move_to(busiest_channel)
-                safe_guild_name = self._safe_guild_name(guild)
-                self.logger.info(f"[{safe_guild_name}] Bot moved to busier channel: {busiest_channel.name} ({max_members} members)")
+                # Apply debouncing to prevent rapid channel switching
+                if not self._should_switch_channels(guild):
+                    self.logger.debug(f"[{safe_guild_name}] Would move from {current_channel.name} to {busiest_channel.name}, but switch is on cooldown")
+                    newrelic.agent.record_custom_metric('Custom/Voice/SwitchCooldown', 1)
+                    return
+
+                try:
+                    self.logger.debug(f"[{safe_guild_name}] Moving from {current_channel.name} to {busiest_channel.name}")
+                    await guild.voice_client.move_to(busiest_channel)
+                    self.logger.info(f"[{safe_guild_name}] Bot moved to busier channel: {busiest_channel.name} ({max_members} members)")
+                    self._mark_channel_switch(guild)  # Mark the switch
+                    newrelic.agent.record_custom_metric('Custom/Voice/ChannelMove', 1)
+                except discord.ClientException as e:
+                    if "not connected" in str(e).lower():
+                        # Connection was lost, try to reconnect instead of move
+                        self.logger.warning(f"[{safe_guild_name}] Lost connection during move, reconnecting to {busiest_channel.name}")
+                        try:
+                            await guild.voice_client.disconnect(force=True)
+                            await asyncio.sleep(1.0)
+                            await busiest_channel.connect(timeout=30.0, reconnect=True)
+                            self.logger.info(f"[{safe_guild_name}] Reconnected to busiest channel: {busiest_channel.name}")
+                            self._mark_channel_switch(guild)  # Mark the switch
+                            newrelic.agent.record_custom_metric('Custom/Voice/MoveReconnect', 1)
+                        except Exception as move_reconnect_error:
+                            self.logger.error(f"[{safe_guild_name}] Failed to reconnect during move: {move_reconnect_error}")
+                            newrelic.agent.record_custom_metric('Custom/Voice/MoveReconnectError', 1)
+                    else:
+                        self.logger.error(f"[{safe_guild_name}] Error moving to busier channel: {e}")
+                        newrelic.agent.record_custom_metric('Custom/Voice/MoveError', 1)
 
         except discord.ClientException as e:
             safe_guild_name = self._safe_guild_name(guild)
             self.logger.error(f"[{safe_guild_name}] Discord client error joining voice channel: {e}")
+            newrelic.agent.record_custom_metric('Custom/Voice/GeneralClientError', 1)
         except Exception as e:
             safe_guild_name = self._safe_guild_name(guild)
             self.logger.error(f"[{safe_guild_name}] Unexpected error joining voice channel: {e}")
+            newrelic.agent.record_custom_metric('Custom/Voice/GeneralError', 1)
+            newrelic.agent.notice_error()
 
     async def leave_if_empty(self, guild: discord.Guild) -> None:
         """Leave voice channel if no human members are present."""
         try:
             # Check if bot is connected
-            if not guild.voice_client or not guild.voice_client.is_connected():
-                self.logger.debug(f"[{self._safe_guild_name(guild)}] Bot not connected to any voice channel")
+            if not guild.voice_client:
+                self.logger.debug(f"[{self._safe_guild_name(guild)}] No voice client to check for leaving")
+                return
+
+            if not guild.voice_client.is_connected():
+                self.logger.debug(f"[{self._safe_guild_name(guild)}] Voice client not connected, cleaning up")
+                # Clean up the voice client reference if it's not connected
+                try:
+                    await guild.voice_client.disconnect(force=True)
+                except:
+                    pass  # Ignore errors during cleanup
                 return
 
             current_channel = guild.voice_client.channel
+            if not current_channel:
+                self.logger.warning(f"[{self._safe_guild_name(guild)}] Voice client connected but no channel reference")
+                try:
+                    await guild.voice_client.disconnect(force=True)
+                except:
+                    pass
+                return
 
             # Add a small delay to ensure discord state is updated
-            import asyncio
             await asyncio.sleep(0.5)
 
             human_count = self._count_human_members(current_channel)
@@ -375,14 +599,27 @@ class BellboyBot(discord.Client):
 
             # Leave if no human members
             if human_count == 0:
-                await guild.voice_client.disconnect()
-                self.logger.info(f"[{safe_guild_name}] Bot left empty channel: {current_channel.name}")
+                try:
+                    await guild.voice_client.disconnect()
+                    self.logger.info(f"[{safe_guild_name}] Bot left empty channel: {current_channel.name}")
+                    newrelic.agent.record_custom_metric('Custom/Voice/LeftEmpty', 1)
+                except discord.ClientException as e:
+                    self.logger.warning(f"[{safe_guild_name}] Error disconnecting from empty channel: {e}")
+                    # Force disconnect if normal disconnect fails
+                    try:
+                        await guild.voice_client.disconnect(force=True)
+                        self.logger.info(f"[{safe_guild_name}] Force disconnected from channel: {current_channel.name}")
+                        newrelic.agent.record_custom_metric('Custom/Voice/ForceDisconnect', 1)
+                    except Exception as force_error:
+                        self.logger.error(f"[{safe_guild_name}] Failed to force disconnect: {force_error}")
+                        newrelic.agent.record_custom_metric('Custom/Voice/DisconnectError', 1)
             else:
                 self.logger.debug(f"[{safe_guild_name}] Staying in {current_channel.name} with {human_count} human members")
 
         except Exception as e:
             safe_guild_name = self._safe_guild_name(guild)
             self.logger.error(f"[{safe_guild_name}] Error checking if should leave empty channel: {e}")
+            newrelic.agent.notice_error()
 
     def _wrap_discord_event(self, event_name: str):
         """Decorator to wrap Discord events as New Relic transactions."""
@@ -438,6 +675,58 @@ class BellboyBot(discord.Client):
         # Check if bot should join any channels on startup
         await self._check_initial_voice_channels()
 
+        # Start periodic voice connection health check
+        self._start_voice_health_check()
+
+    def _start_voice_health_check(self) -> None:
+        """Start a background task to periodically check voice connection health."""
+        async def voice_health_check():
+            while True:
+                try:
+                    await asyncio.sleep(300)  # Check every 5 minutes
+
+                    for guild in self.guilds:
+                        if not self._is_monitoring_guild(guild):
+                            continue
+
+                        safe_guild_name = self._safe_guild_name(guild)
+
+                        # Check if voice client exists but is not connected
+                        if guild.voice_client and not guild.voice_client.is_connected():
+                            self.logger.warning(f"[{safe_guild_name}] Voice client exists but disconnected, cleaning up")
+                            try:
+                                await guild.voice_client.disconnect(force=True)
+                            except:
+                                pass
+
+                            # Check if we should rejoin
+                            busiest_channel, max_members = await self.find_busiest_voice_channel(guild)
+                            if busiest_channel and max_members > 0:
+                                self.logger.info(f"[{safe_guild_name}] Attempting to rejoin after health check")
+                                try:
+                                    await busiest_channel.connect(timeout=30.0, reconnect=True)
+                                    self.logger.info(f"[{safe_guild_name}] Rejoined channel: {busiest_channel.name}")
+                                    newrelic.agent.record_custom_metric('Custom/Voice/HealthCheckRejoin', 1)
+                                except Exception as rejoin_error:
+                                    self.logger.error(f"[{safe_guild_name}] Health check rejoin failed: {rejoin_error}")
+                                    newrelic.agent.record_custom_metric('Custom/Voice/HealthCheckRejoinError', 1)
+
+                        # Verify we're in the right channel
+                        elif guild.voice_client and guild.voice_client.is_connected():
+                            current_channel = guild.voice_client.channel
+                            busiest_channel, max_members = await self.find_busiest_voice_channel(guild)
+
+                            if current_channel and busiest_channel and current_channel != busiest_channel and max_members > 0:
+                                self.logger.debug(f"[{safe_guild_name}] Health check: should move from {current_channel.name} to {busiest_channel.name}")
+                                await self.join_busiest_channel_if_needed(guild)
+
+                except Exception as e:
+                    self.logger.error(f"Error in voice health check: {e}")
+                    newrelic.agent.notice_error()
+
+        # Start the health check task
+        asyncio.create_task(voice_health_check())
+
     async def _check_initial_voice_channels(self) -> None:
         """Check all guilds for voice channels with users and join the busiest one if needed."""
         try:
@@ -458,12 +747,19 @@ class BellboyBot(discord.Client):
                     # Join if there are users in voice channels and bot is not connected
                     if busiest_channel and max_members > 0 and not guild.voice_client:
                         try:
-                            await busiest_channel.connect()
+                            self.logger.debug(f"[{safe_guild_name}] Attempting to join channel on startup: {busiest_channel.name}")
+                            await busiest_channel.connect(timeout=30.0, reconnect=True)
                             self.logger.info(f"[{safe_guild_name}] Bot joined channel on startup: {busiest_channel.name} ({max_members} members)")
                             newrelic.agent.record_custom_metric('Custom/Bot/StartupChannelJoin', 1)
+                        except asyncio.TimeoutError:
+                            self.logger.error(f"[{safe_guild_name}] Timeout joining channel on startup: {busiest_channel.name}")
+                            newrelic.agent.record_custom_metric('Custom/Bot/StartupJoinTimeout', 1)
                         except discord.ClientException as e:
                             self.logger.error(f"[{safe_guild_name}] Failed to join channel on startup: {e}")
                             newrelic.agent.record_custom_metric('Custom/Bot/StartupChannelJoinError', 1)
+                        except Exception as e:
+                            self.logger.error(f"[{safe_guild_name}] Unexpected error joining channel on startup: {e}")
+                            newrelic.agent.record_custom_metric('Custom/Bot/StartupUnexpectedError', 1)
                     elif busiest_channel and max_members > 0:
                         self.logger.info(f"[{safe_guild_name}] Found active channel on startup: {busiest_channel.name} ({max_members} members) - already connected")
                     else:
@@ -476,6 +772,36 @@ class BellboyBot(discord.Client):
 
         except Exception as e:
             self.logger.error(f"Error during startup voice channel check: {e}")
+            newrelic.agent.notice_error()
+
+    @newrelic.agent.background_task(name='Discord.on_voice_server_disconnect')
+    async def on_voice_server_disconnect(self, channel: discord.VoiceChannel):
+        """Called when the bot is disconnected from a voice server."""
+        try:
+            safe_guild_name = self._safe_guild_name(channel.guild)
+            self.logger.warning(f"[{safe_guild_name}] Voice server disconnect from channel: {channel.name}")
+            newrelic.agent.record_custom_metric('Custom/Voice/ServerDisconnect', 1)
+
+            # Wait a moment for Discord to stabilize
+            await asyncio.sleep(2.0)
+
+            # Check if there are still users in voice channels and attempt to rejoin
+            busiest_channel, max_members = await self.find_busiest_voice_channel(channel.guild)
+            if busiest_channel and max_members > 0:
+                self.logger.info(f"[{safe_guild_name}] Attempting to rejoin after voice server disconnect")
+                try:
+                    await busiest_channel.connect(timeout=30.0, reconnect=True)
+                    self.logger.info(f"[{safe_guild_name}] Successfully rejoined channel: {busiest_channel.name}")
+                    newrelic.agent.record_custom_metric('Custom/Voice/AutoRejoin', 1)
+                except Exception as rejoin_error:
+                    self.logger.error(f"[{safe_guild_name}] Failed to rejoin after disconnect: {rejoin_error}")
+                    newrelic.agent.record_custom_metric('Custom/Voice/AutoRejoinError', 1)
+            else:
+                self.logger.debug(f"[{safe_guild_name}] No active channels to rejoin after disconnect")
+
+        except Exception as e:
+            safe_guild_name = self._safe_guild_name(channel.guild) if channel and channel.guild else "Unknown"
+            self.logger.error(f"[{safe_guild_name}] Error handling voice server disconnect: {e}")
             newrelic.agent.notice_error()
 
     @newrelic.agent.background_task(name='Discord.on_voice_state_update')
@@ -521,7 +847,12 @@ class BellboyBot(discord.Client):
                 self.logger.info(f"[{safe_guild_name}] {username} joined voice channel: {after.channel.name}")
                 # Generate TTS audio for user joining
                 await self.create_and_play_tts('join', guild, display_name=member.display_name, member_id=member.id)
-                await self.join_busiest_channel_if_needed(guild)
+
+                # Apply debouncing for channel switching to prevent rapid moves
+                if self._should_process_member_change(guild):
+                    await self.join_busiest_channel_if_needed(guild)
+                else:
+                    self.logger.debug(f"[{safe_guild_name}] Debouncing channel switch after {username} joined")
 
             # User left a voice channel
             elif before.channel is not None and after.channel is None:
@@ -534,7 +865,12 @@ class BellboyBot(discord.Client):
                 self.logger.info(f"[{safe_guild_name}] {username} left voice channel: {before.channel.name}")
                 # Generate TTS audio for user leaving
                 await self.create_and_play_tts('leave', guild, display_name=member.display_name, member_id=member.id)
-                await self.leave_if_empty(guild)
+
+                # Apply debouncing for leaving empty channels
+                if self._should_process_member_change(guild):
+                    await self.leave_if_empty(guild)
+                else:
+                    self.logger.debug(f"[{safe_guild_name}] Debouncing empty check after {username} left")
 
             # User moved between voice channels
             elif before.channel is not None and after.channel is not None and before.channel != after.channel:
@@ -548,8 +884,13 @@ class BellboyBot(discord.Client):
                 self.logger.info(f"[{safe_guild_name}] {username} moved from {before.channel.name} to {after.channel.name}")
                 # Generate TTS audio for user moving
                 await self.create_and_play_tts('move', guild, display_name=member.display_name, member_id=member.id)
-                await self.join_busiest_channel_if_needed(guild)
-                await self.leave_if_empty(guild)
+
+                # Apply debouncing for channel switching
+                if self._should_process_member_change(guild):
+                    await self.join_busiest_channel_if_needed(guild)
+                    await self.leave_if_empty(guild)
+                else:
+                    self.logger.debug(f"[{safe_guild_name}] Debouncing channel operations after {username} moved")
 
         except Exception as e:
             newrelic.agent.record_custom_metric('Custom/Discord/VoiceStateUpdateErrors', 1)
@@ -580,9 +921,26 @@ class BellboyBot(discord.Client):
         if hasattr(member, 'system') and member.system:
             return False
 
-        # Skip if it's a webhook user
+        # Skip if it's a webhook user (discriminator 0000 indicates webhook/system)
         if hasattr(member, 'discriminator') and member.discriminator == '0000':
             return False
+
+        # Additional checks for edge cases
+        # Skip if member has no activity (could be a zombie connection)
+        if hasattr(member, 'activity') and member.activity is None and hasattr(member, 'status'):
+            # If user has been offline/invisible for extended periods, might be a stale connection
+            if member.status == discord.Status.offline:
+                return True  # Still count offline users as they might just be invisible
+
+        # Skip members with suspicious patterns (very new accounts with no avatar, etc.)
+        # This helps filter out potential bot accounts that slip through
+        if hasattr(member, 'created_at') and hasattr(member, 'avatar'):
+            from datetime import timedelta
+            account_age = datetime.now(member.created_at.tzinfo) - member.created_at
+            if account_age < timedelta(days=1) and member.avatar is None and member.display_name == member.name:
+                # Very new account with default avatar and name - potentially suspicious
+                self.logger.debug(f"Suspicious new account detected: {member.display_name} (age: {account_age})")
+                # For now, still count them as human but log for monitoring
 
         return True
 
