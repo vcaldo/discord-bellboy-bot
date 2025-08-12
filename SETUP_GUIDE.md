@@ -74,6 +74,7 @@ providers:
 - `TTS_PROVIDER`: Set to `coqui` (more providers coming soon)
 - `DISCORD_TOKEN`: Your Discord bot token
 - `LOG_LEVEL`: Logging level (INFO, DEBUG, WARNING, ERROR)
+- `IGNORED_CHANNEL_ID`: Channel ID to ignore when selecting busiest channel (optional)
 
 ## Testing the Setup
 

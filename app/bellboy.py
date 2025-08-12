@@ -46,6 +46,7 @@ except ImportError:
 DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
 LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO').upper()
 TTS_PROVIDER = os.getenv('TTS_PROVIDER', 'coqui')  # Default to coqui
+IGNORED_CHANNEL_ID = os.getenv('IGNORED_CHANNEL_ID')  # Channel ID to ignore when selecting busiest channel
 
 # Constants
 LOGS_DIR = 'logs'
@@ -242,6 +243,7 @@ class BellboyBot(discord.Client):
     async def find_busiest_voice_channel(self, guild: discord.Guild) -> Tuple[Optional[discord.VoiceChannel], int]:
         """
         Find the voice channel with the most human members.
+        Ignores the channel specified in IGNORED_CHANNEL_ID environment variable.
 
         Returns:
             Tuple of (busiest_channel, member_count).
@@ -251,6 +253,11 @@ class BellboyBot(discord.Client):
         max_members = 0
 
         for channel in guild.voice_channels:
+            # Skip the ignored channel if it's configured
+            if IGNORED_CHANNEL_ID and str(channel.id) == IGNORED_CHANNEL_ID:
+                self.logger.debug(f"[{self._safe_guild_name(guild)}] Skipping ignored channel: {channel.name} (ID: {channel.id})")
+                continue
+                
             member_count = self._count_human_members(channel)
             if member_count > max_members:
                 max_members = member_count
