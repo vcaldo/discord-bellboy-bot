@@ -15,9 +15,9 @@ providers:
       audio_quality: "128k"
       volume: "1.1"
     messages:
-      join: "Bem Vindo {display_name}"
-      leave: "Adeus {display_name}"
-      move: "Trocou de canal {display_name}"
+      join: "Oobaaaa, {display_name} entrou"
+      leave: "Que pena, {display_name} saiu"
+      move: "O tal do {display_name} trocou de canal"
 
   # Placeholder for future providers
   # elevenlabs:
