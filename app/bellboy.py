@@ -320,11 +320,12 @@ class BellboyBot(discord.Client):
         try:
             busiest_channel, max_members = await self.find_busiest_voice_channel(guild)
 
-            # Check if bot should join a channel
-            if self.presence_manager.should_bot_join(guild, busiest_channel, max_members):
-                await busiest_channel.connect()
-                safe_guild_name = self._safe_guild_name(guild)
-                self.logger.info(f"[{safe_guild_name}] Bot joined busiest channel: {busiest_channel.name} ({max_members} members)")
+            # Check if bot should join a channel (with cooldown respect)
+            if self.presence_manager.should_bot_join(guild, busiest_channel, max_members, respect_cooldown=True):
+                success = await self.presence_manager.safe_connect_to_channel(busiest_channel, guild)
+                if success:
+                    safe_guild_name = self._safe_guild_name(guild)
+                    self.logger.info(f"[{safe_guild_name}] Bot joined busiest channel: {busiest_channel.name} ({max_members} members)")
                 return
 
             # Check if bot should move to a different channel
@@ -375,6 +376,9 @@ class BellboyBot(discord.Client):
 
         # Set bot user ID in presence manager
         self.presence_manager.set_bot_user_id(self.user.id)
+
+        # Mark bot as ready for connection management
+        self.presence_manager.set_bot_ready_time()
 
         # Initialize TTS manager asynchronously with timeout
         if self.tts_manager:
@@ -433,14 +437,20 @@ class BellboyBot(discord.Client):
                     # Find the busiest voice channel
                     busiest_channel, max_members = await self.find_busiest_voice_channel(guild)
 
-                    # Join if there are users in voice channels and bot is not connected
-                    if busiest_channel and max_members > 0 and not guild.voice_client:
+                    # Check if we should attempt startup connection
+                    if (busiest_channel and max_members > 0 and not guild.voice_client and
+                        self.presence_manager.should_attempt_startup_connection(guild)):
                         try:
-                            await busiest_channel.connect()
-                            self.logger.info(f"[{safe_guild_name}] Bot joined channel on startup: {busiest_channel.name} ({max_members} members)")
-                            newrelic.agent.record_custom_metric('Custom/Bot/StartupChannelJoin', 1)
-                        except discord.ClientException as e:
-                            self.logger.error(f"[{safe_guild_name}] Failed to join channel on startup: {e}")
+                            # Use safe connection method
+                            success = await self.presence_manager.safe_connect_to_channel(busiest_channel, guild)
+                            if success:
+                                self.logger.info(f"[{safe_guild_name}] Bot joined channel on startup: {busiest_channel.name} ({max_members} members)")
+                                newrelic.agent.record_custom_metric('Custom/Bot/StartupChannelJoin', 1)
+                            else:
+                                self.logger.warning(f"[{safe_guild_name}] Failed to join channel on startup after retries")
+                                newrelic.agent.record_custom_metric('Custom/Bot/StartupChannelJoinError', 1)
+                        except Exception as e:
+                            self.logger.error(f"[{safe_guild_name}] Unexpected error joining channel on startup: {e}")
                             newrelic.agent.record_custom_metric('Custom/Bot/StartupChannelJoinError', 1)
                     elif busiest_channel and max_members > 0:
                         self.logger.info(f"[{safe_guild_name}] Found active channel on startup: {busiest_channel.name} ({max_members} members) - already connected")
@@ -591,8 +601,9 @@ class BellboyBot(discord.Client):
 
             # Execute the recommended action
             if action_info['action'] == 'join' and action_info['target_channel']:
-                await action_info['target_channel'].connect()
-                self.logger.info(f"[{safe_guild_name}] Bot joined channel: {action_info['target_channel'].name}")
+                success = await self.presence_manager.safe_connect_to_channel(action_info['target_channel'], member.guild)
+                if success:
+                    self.logger.info(f"[{safe_guild_name}] Bot joined channel: {action_info['target_channel'].name}")
 
             elif action_info['action'] == 'move' and action_info['target_channel']:
                 await member.guild.voice_client.move_to(action_info['target_channel'])
@@ -600,9 +611,7 @@ class BellboyBot(discord.Client):
 
             elif action_info['action'] == 'leave':
                 await member.guild.voice_client.disconnect()
-                self.logger.info(f"[{safe_guild_name}] Bot left empty channel")
-
-            # Generate TTS audio if configured
+                self.logger.info(f"[{safe_guild_name}] Bot left empty channel")            # Generate TTS audio if configured
             try:
                 await self.create_and_play_tts(event_type, member.guild, display_name=member.display_name, member_id=member.id)
             except Exception as tts_error:

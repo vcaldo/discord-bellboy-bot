@@ -5,8 +5,10 @@ This module provides a clean, simple interface for managing bot presence
 in voice channels based on human user activity.
 """
 
+import asyncio
 import logging
 import os
+import time
 from typing import Optional, Tuple, List, Dict, Any
 
 
@@ -18,6 +20,7 @@ class PresenceManager:
     - Identify human users vs bots
     - Find the most active voice channel
     - Decide when bot should join, move, or leave channels
+    - Handle voice connection issues gracefully
     """
 
     def __init__(self):
@@ -25,6 +28,73 @@ class PresenceManager:
         self.bot_user_id: Optional[int] = None
         self.ignored_channel_id: Optional[str] = os.getenv('IGNORED_CHANNEL_ID')
         self.logger = logging.getLogger('bellboy.presence')
+
+        # Connection management
+        self.last_connection_attempt: Dict[str, float] = {}
+        self.connection_cooldown = 30.0  # 30 seconds between connection attempts
+        self.startup_delay = 10.0  # Delay before attempting connections on startup
+        self.bot_ready_time: Optional[float] = None
+
+    def set_bot_ready_time(self) -> None:
+        """Mark when the bot became ready."""
+        self.bot_ready_time = time.time()
+        self.logger.debug("Bot ready time recorded for connection management")
+
+    def can_attempt_connection(self, guild_id: str) -> bool:
+        """
+        Check if enough time has passed since last connection attempt.
+
+        Args:
+            guild_id: Guild ID as string
+
+        Returns:
+            bool: True if connection can be attempted
+        """
+        now = time.time()
+
+        # Ensure startup delay has passed
+        if self.bot_ready_time and (now - self.bot_ready_time) < self.startup_delay:
+            self.logger.debug(f"Startup delay active, waiting {self.startup_delay - (now - self.bot_ready_time):.1f}s more")
+            return False
+
+        # Check guild-specific cooldown
+        last_attempt = self.last_connection_attempt.get(guild_id, 0)
+        time_since_last = now - last_attempt
+
+        if time_since_last < self.connection_cooldown:
+            remaining = self.connection_cooldown - time_since_last
+            self.logger.debug(f"Connection cooldown active for guild {guild_id}, {remaining:.1f}s remaining")
+            return False
+
+        return True
+
+    def record_connection_attempt(self, guild_id: str) -> None:
+        """Record that a connection attempt was made."""
+        self.last_connection_attempt[guild_id] = time.time()
+        self.logger.debug(f"Connection attempt recorded for guild {guild_id}")
+
+    def should_attempt_startup_connection(self, guild) -> bool:
+        """
+        Determine if bot should attempt to connect on startup.
+
+        Args:
+            guild: Discord guild
+
+        Returns:
+            bool: True if startup connection should be attempted
+        """
+        guild_id = str(getattr(guild, 'id', ''))
+
+        # Check if we can attempt connection (respects cooldowns and delays)
+        if not self.can_attempt_connection(guild_id):
+            return False
+
+        # Don't connect if already connected
+        voice_client = getattr(guild, 'voice_client', None)
+        if voice_client and getattr(voice_client, 'is_connected', lambda: False)():
+            return False
+
+        return True
 
     def set_bot_user_id(self, user_id: int) -> None:
         """Set the bot's user ID for filtering."""
@@ -109,7 +179,7 @@ class PresenceManager:
 
         return best_channel, max_humans
 
-    def should_bot_join(self, guild, target_channel, human_count: int) -> bool:
+    def should_bot_join(self, guild, target_channel, human_count: int, respect_cooldown: bool = True) -> bool:
         """
         Determine if bot should join a voice channel.
 
@@ -117,6 +187,7 @@ class PresenceManager:
             guild: Discord guild
             target_channel: Channel to potentially join
             human_count: Number of humans in the channel
+            respect_cooldown: Whether to respect connection cooldowns
 
         Returns:
             bool: True if bot should join
@@ -124,6 +195,12 @@ class PresenceManager:
         # No point joining if no humans or no channel
         if not target_channel or human_count == 0:
             return False
+
+        # Check connection cooldown if requested
+        if respect_cooldown:
+            guild_id = str(getattr(guild, 'id', ''))
+            if not self.can_attempt_connection(guild_id):
+                return False
 
         # Join if bot is not connected anywhere
         voice_client = getattr(guild, 'voice_client', None)
@@ -287,3 +364,51 @@ class PresenceManager:
             'most_active_channel': most_active_channel,
             'human_count': human_count
         }
+
+    async def safe_connect_to_channel(self, channel, guild, max_retries: int = 3) -> bool:
+        """
+        Safely attempt to connect to a voice channel with retry logic.
+
+        Args:
+            channel: Voice channel to connect to
+            guild: Discord guild
+            max_retries: Maximum number of connection attempts
+
+        Returns:
+            bool: True if connection successful
+        """
+        guild_id = str(getattr(guild, 'id', ''))
+        channel_name = getattr(channel, 'name', 'Unknown')
+
+        # Record the connection attempt
+        self.record_connection_attempt(guild_id)
+
+        for attempt in range(1, max_retries + 1):
+            try:
+                self.logger.debug(f"Attempting to connect to '{channel_name}' (attempt {attempt}/{max_retries})")
+
+                # Set a timeout for the connection
+                await asyncio.wait_for(channel.connect(), timeout=10.0)
+
+                self.logger.info(f"Successfully connected to '{channel_name}'")
+                return True
+
+            except asyncio.TimeoutError:
+                self.logger.warning(f"Connection timeout to '{channel_name}' (attempt {attempt}/{max_retries})")
+            except Exception as e:
+                # Check for specific Discord error codes
+                error_code = getattr(e, 'code', None)
+                if error_code == 4006:  # Session no longer valid
+                    self.logger.warning(f"Discord session invalid (4006), waiting before retry (attempt {attempt}/{max_retries})")
+                    await asyncio.sleep(2 ** attempt)  # Exponential backoff
+                else:
+                    self.logger.error(f"Connection error to '{channel_name}': {e} (attempt {attempt}/{max_retries})")
+
+                if attempt == max_retries:
+                    self.logger.error(f"Failed to connect to '{channel_name}' after {max_retries} attempts")
+                    return False
+
+                # Wait before retry
+                await asyncio.sleep(1.0 * attempt)
+
+        return False

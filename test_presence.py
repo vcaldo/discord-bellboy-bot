@@ -85,9 +85,15 @@ def test_presence_manager():
     if most_active:
         print(f"✓ Most active channel: {most_active.name} with {count} humans")
 
+    # Test connection management
+    pm.set_bot_ready_time()
+    print(f"✓ Bot ready time set for connection management")
+
+    # Test startup connection logic
+    can_connect = pm.should_attempt_startup_connection(test_guild)
+    print(f"✓ Should attempt startup connection: {can_connect}")
+
     print("\n✅ Simplified PresenceManager tests completed successfully!")
-
-
 def demonstrate_simplified_usage():
     """Demonstrate how to use the simplified PresenceManager."""
     print("\n" + "="*60)
@@ -110,6 +116,13 @@ DECISION METHODS:
 ADVANCED METHODS:
 • get_guild_summary(guild) - Complete activity overview
 • process_voice_update(guild, member, before, after) - All-in-one processor
+• safe_connect_to_channel(channel, guild) - Reliable connection with retries
+
+CONNECTION MANAGEMENT:
+• Startup delay prevents immediate connections after bot startup
+• Connection cooldowns prevent rapid retry attempts
+• Exponential backoff for Discord error 4006 (session invalid)
+• Timeout handling for voice connections
 
 KEY SIMPLIFICATIONS:
 1. No Discord imports required - works with any objects
@@ -117,6 +130,7 @@ KEY SIMPLIFICATIONS:
 3. Single method to process voice updates and get actions
 4. Cleaner method names (is_human_user vs is_human_member)
 5. More defensive programming (handles missing attributes)
+6. Built-in connection reliability and error handling
 
 EXAMPLE USAGE:
 ```python
