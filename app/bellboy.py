@@ -257,7 +257,7 @@ class BellboyBot(discord.Client):
             if IGNORED_CHANNEL_ID and str(channel.id) == IGNORED_CHANNEL_ID:
                 self.logger.debug(f"[{self._safe_guild_name(guild)}] Skipping ignored channel: {channel.name} (ID: {channel.id})")
                 continue
-                
+
             member_count = self._count_human_members(channel)
             if member_count > max_members:
                 max_members = member_count
