@@ -11,6 +11,10 @@ services:
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - AUTO_JOIN_BUSIEST=${AUTO_JOIN_BUSIEST:-true}
       - AUTO_LEAVE_EMPTY=${AUTO_LEAVE_EMPTY:-true}
+      # Voice connection configuration for better stability
+      - IGNORED_CHANNEL_ID=${IGNORED_CHANNEL_ID:-}
+      - VOICE_CONNECTION_TIMEOUT=${VOICE_CONNECTION_TIMEOUT:-30}
+      - VOICE_RETRY_ATTEMPTS=${VOICE_RETRY_ATTEMPTS:-3}
       # TTS configuration
       - TTS_PROVIDER=${TTS_PROVIDER:-coqui}
       # New Relic monitoring
@@ -18,6 +22,9 @@ services:
       - NEW_RELIC_APP_NAME=${NEW_RELIC_APP_NAME:-Discord-Bellboy-Bot}
       - NEW_RELIC_ENVIRONMENT=${NEW_RELIC_ENVIRONMENT:-production}
       - NEW_RELIC_CONFIG_FILE=/app/newrelic.ini
+      # Network and system optimizations for voice
+      - PYTHONUNBUFFERED=1
+      - PYTHONIOENCODING=utf-8
     volumes:
       - ./logs:/app/logs
       - ./.env:/app/.env:ro

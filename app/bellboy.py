@@ -48,6 +48,10 @@ LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO').upper()
 TTS_PROVIDER = os.getenv('TTS_PROVIDER', 'coqui')  # Default to coqui
 IGNORED_CHANNEL_ID = os.getenv('IGNORED_CHANNEL_ID')  # Channel ID to ignore when selecting busiest channel
 
+# Voice connection configuration
+VOICE_CONNECTION_TIMEOUT = int(os.getenv('VOICE_CONNECTION_TIMEOUT', '30'))  # Connection timeout in seconds
+VOICE_RETRY_ATTEMPTS = int(os.getenv('VOICE_RETRY_ATTEMPTS', '3'))  # Number of retry attempts
+
 # Constants
 LOGS_DIR = 'logs'
 LOG_DATE_FORMAT = '%Y%m%d'
@@ -87,6 +91,9 @@ class BellboyBot(discord.Client):
         # Test New Relic transaction
         if NEW_RELIC_LICENSE_KEY:
             self._test_newrelic_transaction()
+
+        # Voice connection state tracking
+        self._voice_connection_locks = {}  # Per-guild locks for voice operations
 
     def _setup_logging(self) -> None:
         """Set up logging to file and console."""
@@ -331,65 +338,300 @@ class BellboyBot(discord.Client):
             safe_guild_name = self._safe_guild_name(guild)
             self.logger.error(f"[{safe_guild_name}] Error playing notification audio: {e}")
 
+    def _get_voice_lock(self, guild: discord.Guild):
+        """Get or create a voice operation lock for the guild."""
+        import asyncio
+        if guild.id not in self._voice_connection_locks:
+            self._voice_connection_locks[guild.id] = asyncio.Lock()
+        return self._voice_connection_locks[guild.id]
+
     async def join_busiest_channel_if_needed(self, guild: discord.Guild) -> None:
         """Join the busiest voice channel if bot is not already there."""
+        # Use a per-guild lock to prevent race conditions in voice operations
+        async with self._get_voice_lock(guild):
+            try:
+                busiest_channel, max_members = await self.find_busiest_voice_channel(guild)
+
+                # Only proceed if there are users in voice channels
+                if not busiest_channel or max_members == 0:
+                    return
+
+                # If bot is not connected, join the busiest channel
+                if not guild.voice_client:
+                    success = await self._connect_to_voice_channel_with_retry(busiest_channel, guild)
+                    if success:
+                        safe_guild_name = self._safe_guild_name(guild)
+                        self.logger.info(f"[{safe_guild_name}] Bot joined busiest channel: {busiest_channel.name} ({max_members} members)")
+                    return
+
+                # If bot is connected but not in the busiest channel, move there
+                current_channel = guild.voice_client.channel
+                if current_channel != busiest_channel:
+                    success = await self._move_to_voice_channel_with_retry(busiest_channel, guild)
+                    if success:
+                        safe_guild_name = self._safe_guild_name(guild)
+                        self.logger.info(f"[{safe_guild_name}] Bot moved to busier channel: {busiest_channel.name} ({max_members} members)")
+
+            except discord.ClientException as e:
+                safe_guild_name = self._safe_guild_name(guild)
+                self.logger.error(f"[{safe_guild_name}] Discord client error joining voice channel: {e}")
+            except Exception as e:
+                safe_guild_name = self._safe_guild_name(guild)
+                self.logger.error(f"[{safe_guild_name}] Unexpected error joining voice channel: {e}")
+
+    async def _connect_to_voice_channel_with_retry(self, channel: discord.VoiceChannel, guild: discord.Guild, max_retries: int = None) -> bool:
+        """
+        Connect to a voice channel with retry logic and exponential backoff.
+
+        Args:
+            channel: The voice channel to connect to
+            guild: The Discord guild
+            max_retries: Maximum number of retry attempts (uses VOICE_RETRY_ATTEMPTS if None)
+
+        Returns:
+            bool: True if connection successful, False otherwise
+        """
+        import asyncio
+
+        if max_retries is None:
+            max_retries = VOICE_RETRY_ATTEMPTS
+
+        safe_guild_name = self._safe_guild_name(guild)
+
+        for attempt in range(max_retries + 1):
+            try:
+                # Clean up any existing stale connections before attempting
+                if guild.voice_client and not guild.voice_client.is_connected():
+                    try:
+                        await guild.voice_client.cleanup()
+                    except Exception:
+                        pass  # Ignore cleanup errors
+
+                # Add timeout to prevent hanging connections
+                await asyncio.wait_for(channel.connect(), timeout=VOICE_CONNECTION_TIMEOUT)
+
+                # Verify connection was successful
+                if guild.voice_client and guild.voice_client.is_connected():
+                    return True
+                else:
+                    raise discord.ClientException("Connection verification failed")
+
+            except asyncio.TimeoutError:
+                self.logger.warning(f"[{safe_guild_name}] Voice connection timeout on attempt {attempt + 1}/{max_retries + 1}")
+                await self._cleanup_voice_connection(guild)
+
+            except discord.ClientException as e:
+                if "already connected" in str(e).lower():
+                    # Bot is already connected somewhere, need to disconnect first
+                    try:
+                        if guild.voice_client:
+                            await guild.voice_client.disconnect()
+                            await asyncio.sleep(2.0)  # Give Discord more time to process the disconnect
+                    except Exception:
+                        pass  # Ignore errors during disconnect
+
+                self.logger.warning(f"[{safe_guild_name}] Voice connection failed on attempt {attempt + 1}/{max_retries + 1}: {e}")
+                await self._cleanup_voice_connection(guild)
+
+            except Exception as e:
+                self.logger.warning(f"[{safe_guild_name}] Unexpected error connecting to voice on attempt {attempt + 1}/{max_retries + 1}: {e}")
+                await self._cleanup_voice_connection(guild)
+
+            # Don't retry on the last attempt
+            if attempt < max_retries:
+                # Exponential backoff: 2s, 4s, 8s
+                wait_time = 2 ** (attempt + 1)
+                self.logger.info(f"[{safe_guild_name}] Retrying voice connection in {wait_time}s...")
+                await asyncio.sleep(wait_time)
+
+        self.logger.error(f"[{safe_guild_name}] Failed to connect to voice channel {channel.name} after {max_retries + 1} attempts")
+        return False
+
+    async def _cleanup_voice_connection(self, guild: discord.Guild) -> None:
+        """Clean up any stale voice connection for a guild."""
         try:
-            busiest_channel, max_members = await self.find_busiest_voice_channel(guild)
+            if guild.voice_client:
+                try:
+                    # Force cleanup of the voice client
+                    await guild.voice_client.cleanup()
+                except Exception:
+                    pass
 
-            # Only proceed if there are users in voice channels
-            if not busiest_channel or max_members == 0:
-                return
+                # Give Discord time to process the cleanup
+                import asyncio
+                await asyncio.sleep(1.0)
+        except Exception:
+            pass  # Ignore all cleanup errors
 
-            # If bot is not connected, join the busiest channel
-            if not guild.voice_client:
-                await busiest_channel.connect()
-                safe_guild_name = self._safe_guild_name(guild)
-                self.logger.info(f"[{safe_guild_name}] Bot joined busiest channel: {busiest_channel.name} ({max_members} members)")
-                return
+    async def _voice_connection_health_monitor(self) -> None:
+        """Periodically check and clean up stale voice connections."""
+        import asyncio
 
-            # If bot is connected but not in the busiest channel, move there
-            current_channel = guild.voice_client.channel
-            if current_channel != busiest_channel:
-                await guild.voice_client.move_to(busiest_channel)
-                safe_guild_name = self._safe_guild_name(guild)
-                self.logger.info(f"[{safe_guild_name}] Bot moved to busier channel: {busiest_channel.name} ({max_members} members)")
+        while not self.is_closed():
+            try:
+                await asyncio.sleep(60)  # Check every minute
 
-        except discord.ClientException as e:
-            safe_guild_name = self._safe_guild_name(guild)
-            self.logger.error(f"[{safe_guild_name}] Discord client error joining voice channel: {e}")
-        except Exception as e:
-            safe_guild_name = self._safe_guild_name(guild)
-            self.logger.error(f"[{safe_guild_name}] Unexpected error joining voice channel: {e}")
+                for guild in self.guilds:
+                    if guild.voice_client:
+                        try:
+                            # Check if voice client is in a bad state
+                            if not guild.voice_client.is_connected():
+                                safe_guild_name = self._safe_guild_name(guild)
+                                self.logger.warning(f"[{safe_guild_name}] Detected stale voice connection, cleaning up...")
+                                await self._cleanup_voice_connection(guild)
+
+                        except Exception as e:
+                            safe_guild_name = self._safe_guild_name(guild)
+                            self.logger.debug(f"[{safe_guild_name}] Error checking voice connection health: {e}")
+
+            except Exception as e:
+                self.logger.error(f"Error in voice connection health monitor: {e}")
+                # Continue monitoring even if there's an error
+                await asyncio.sleep(30)  # Wait before retrying
+
+    async def _move_to_voice_channel_with_retry(self, channel: discord.VoiceChannel, guild: discord.Guild, max_retries: int = None) -> bool:
+        """
+        Move to a voice channel with retry logic and exponential backoff.
+
+        Args:
+            channel: The voice channel to move to
+            guild: The Discord guild
+            max_retries: Maximum number of retry attempts (uses VOICE_RETRY_ATTEMPTS if None)
+
+        Returns:
+            bool: True if move successful, False otherwise
+        """
+        import asyncio
+
+        if max_retries is None:
+            max_retries = VOICE_RETRY_ATTEMPTS
+
+        safe_guild_name = self._safe_guild_name(guild)
+
+        if not guild.voice_client or not guild.voice_client.is_connected():
+            self.logger.warning(f"[{safe_guild_name}] Cannot move - bot not connected to voice")
+            return await self._connect_to_voice_channel_with_retry(channel, guild, max_retries)
+
+        for attempt in range(max_retries + 1):
+            try:
+                # Verify we're still connected before attempting move
+                if not guild.voice_client.is_connected():
+                    self.logger.warning(f"[{safe_guild_name}] Lost connection during move attempt, reconnecting...")
+                    return await self._connect_to_voice_channel_with_retry(channel, guild, max_retries)
+
+                # Add timeout to prevent hanging operations
+                await asyncio.wait_for(guild.voice_client.move_to(channel), timeout=VOICE_CONNECTION_TIMEOUT)
+
+                # Verify move was successful
+                if guild.voice_client and guild.voice_client.is_connected() and guild.voice_client.channel == channel:
+                    return True
+                else:
+                    raise discord.ClientException("Move verification failed")
+
+            except asyncio.TimeoutError:
+                self.logger.warning(f"[{safe_guild_name}] Voice move timeout on attempt {attempt + 1}/{max_retries + 1}")
+                await self._cleanup_voice_connection(guild)
+
+            except discord.ClientException as e:
+                self.logger.warning(f"[{safe_guild_name}] Voice move failed on attempt {attempt + 1}/{max_retries + 1}: {e}")
+                await self._cleanup_voice_connection(guild)
+
+            except Exception as e:
+                self.logger.warning(f"[{safe_guild_name}] Unexpected error moving voice on attempt {attempt + 1}/{max_retries + 1}: {e}")
+                await self._cleanup_voice_connection(guild)
+
+            # Don't retry on the last attempt
+            if attempt < max_retries:
+                # Exponential backoff: 2s, 4s, 8s
+                wait_time = 2 ** (attempt + 1)
+                self.logger.info(f"[{safe_guild_name}] Retrying voice move in {wait_time}s...")
+                await asyncio.sleep(wait_time)
+
+        self.logger.error(f"[{safe_guild_name}] Failed to move to voice channel {channel.name} after {max_retries + 1} attempts")
+        return False
 
     async def leave_if_empty(self, guild: discord.Guild) -> None:
         """Leave voice channel if no human members are present."""
-        try:
-            # Check if bot is connected
-            if not guild.voice_client or not guild.voice_client.is_connected():
-                self.logger.debug(f"[{self._safe_guild_name(guild)}] Bot not connected to any voice channel")
-                return
+        # Use a per-guild lock to prevent race conditions in voice operations
+        async with self._get_voice_lock(guild):
+            try:
+                # Check if bot is connected
+                if not guild.voice_client or not guild.voice_client.is_connected():
+                    self.logger.debug(f"[{self._safe_guild_name(guild)}] Bot not connected to any voice channel")
+                    return
 
-            current_channel = guild.voice_client.channel
+                current_channel = guild.voice_client.channel
 
-            # Add a small delay to ensure discord state is updated
-            import asyncio
-            await asyncio.sleep(0.5)
+                # Add a small delay to ensure discord state is updated
+                import asyncio
+                await asyncio.sleep(0.5)
 
-            human_count = self._count_human_members(current_channel)
+                human_count = self._count_human_members(current_channel)
 
-            safe_guild_name = self._safe_guild_name(guild)
-            self.logger.debug(f"[{safe_guild_name}] Checking if should leave {current_channel.name}: {human_count} human members")
+                safe_guild_name = self._safe_guild_name(guild)
+                self.logger.debug(f"[{safe_guild_name}] Checking if should leave {current_channel.name}: {human_count} human members")
 
-            # Leave if no human members
-            if human_count == 0:
-                await guild.voice_client.disconnect()
-                self.logger.info(f"[{safe_guild_name}] Bot left empty channel: {current_channel.name}")
-            else:
-                self.logger.debug(f"[{safe_guild_name}] Staying in {current_channel.name} with {human_count} human members")
+                # Leave if no human members
+                if human_count == 0:
+                    await self._disconnect_with_retry(guild)
+                    self.logger.info(f"[{safe_guild_name}] Bot left empty channel: {current_channel.name}")
+                else:
+                    self.logger.debug(f"[{safe_guild_name}] Staying in {current_channel.name} with {human_count} human members")
 
-        except Exception as e:
-            safe_guild_name = self._safe_guild_name(guild)
-            self.logger.error(f"[{safe_guild_name}] Error checking if should leave empty channel: {e}")
+            except Exception as e:
+                safe_guild_name = self._safe_guild_name(guild)
+                self.logger.error(f"[{safe_guild_name}] Error checking if should leave empty channel: {e}")
+
+    async def _disconnect_with_retry(self, guild: discord.Guild, max_retries: int = 2) -> bool:
+        """
+        Disconnect from voice channel with retry logic.
+
+        Args:
+            guild: The Discord guild
+            max_retries: Maximum number of retry attempts
+
+        Returns:
+            bool: True if disconnect successful, False otherwise
+        """
+        import asyncio
+
+        safe_guild_name = self._safe_guild_name(guild)
+
+        if not guild.voice_client:
+            return True  # Already disconnected
+
+        for attempt in range(max_retries + 1):
+            try:
+                # Add timeout to prevent hanging disconnections
+                await asyncio.wait_for(guild.voice_client.disconnect(), timeout=10.0)
+
+                # Verify disconnection
+                await asyncio.sleep(0.5)  # Give Discord time to update state
+                if not guild.voice_client or not guild.voice_client.is_connected():
+                    return True
+                else:
+                    raise discord.ClientException("Disconnect verification failed")
+
+            except asyncio.TimeoutError:
+                self.logger.warning(f"[{safe_guild_name}] Voice disconnect timeout on attempt {attempt + 1}/{max_retries + 1}")
+                await self._cleanup_voice_connection(guild)
+
+            except discord.ClientException as e:
+                self.logger.warning(f"[{safe_guild_name}] Voice disconnect failed on attempt {attempt + 1}/{max_retries + 1}: {e}")
+                await self._cleanup_voice_connection(guild)
+
+            except Exception as e:
+                self.logger.warning(f"[{safe_guild_name}] Unexpected error disconnecting voice on attempt {attempt + 1}/{max_retries + 1}: {e}")
+                await self._cleanup_voice_connection(guild)
+
+            # Don't retry on the last attempt
+            if attempt < max_retries:
+                wait_time = 1.0  # Short wait for disconnection retries
+                self.logger.info(f"[{safe_guild_name}] Retrying voice disconnect in {wait_time}s...")
+                await asyncio.sleep(wait_time)
+
+        self.logger.error(f"[{safe_guild_name}] Failed to disconnect from voice channel after {max_retries + 1} attempts")
+        return False
 
     def _wrap_discord_event(self, event_name: str):
         """Decorator to wrap Discord events as New Relic transactions."""
@@ -445,6 +687,10 @@ class BellboyBot(discord.Client):
         # Check if bot should join any channels on startup
         await self._check_initial_voice_channels()
 
+        # Start voice connection health monitoring
+        import asyncio
+        self.loop.create_task(self._voice_connection_health_monitor())
+
     async def _check_initial_voice_channels(self) -> None:
         """Check all guilds for voice channels with users and join the busiest one if needed."""
         try:
@@ -464,12 +710,12 @@ class BellboyBot(discord.Client):
 
                     # Join if there are users in voice channels and bot is not connected
                     if busiest_channel and max_members > 0 and not guild.voice_client:
-                        try:
-                            await busiest_channel.connect()
+                        success = await self._connect_to_voice_channel_with_retry(busiest_channel, guild)
+                        if success:
                             self.logger.info(f"[{safe_guild_name}] Bot joined channel on startup: {busiest_channel.name} ({max_members} members)")
                             newrelic.agent.record_custom_metric('Custom/Bot/StartupChannelJoin', 1)
-                        except discord.ClientException as e:
-                            self.logger.error(f"[{safe_guild_name}] Failed to join channel on startup: {e}")
+                        else:
+                            self.logger.error(f"[{safe_guild_name}] Failed to join channel on startup after retries")
                             newrelic.agent.record_custom_metric('Custom/Bot/StartupChannelJoinError', 1)
                     elif busiest_channel and max_members > 0:
                         self.logger.info(f"[{safe_guild_name}] Found active channel on startup: {busiest_channel.name} ({max_members} members) - already connected")
@@ -558,11 +804,18 @@ class BellboyBot(discord.Client):
                 await self.join_busiest_channel_if_needed(guild)
                 await self.leave_if_empty(guild)
 
+        except discord.errors.ConnectionClosed as e:
+            # Handle voice connection closed errors specifically
+            await self.on_voice_state_update_error(member, before, after, e)
         except Exception as e:
             newrelic.agent.record_custom_metric('Custom/Discord/VoiceStateUpdateErrors', 1)
             newrelic.agent.notice_error()
             safe_guild_name = self._safe_guild_name(member.guild)
             self.logger.error(f"[{safe_guild_name}] Error in voice state update: {e}")
+
+            # Try to handle voice-related errors gracefully
+            if "voice" in str(e).lower() or "4006" in str(e):
+                await self.on_voice_state_update_error(member, before, after, e)
 
     @newrelic.agent.background_task(name='Discord.on_error')
     async def on_error(self, event, *args, **kwargs):
@@ -572,6 +825,30 @@ class BellboyBot(discord.Client):
         newrelic.agent.notice_error()
 
         self.logger.error(f'An error occurred in event {event}', exc_info=True)
+
+    async def on_voice_state_update_error(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState, error: Exception) -> None:
+        """Handle voice state update errors specifically."""
+        safe_guild_name = self._safe_guild_name(member.guild)
+
+        # Check for specific voice connection errors
+        if isinstance(error, discord.errors.ConnectionClosed):
+            if error.code == 4006:  # Session no longer valid
+                self.logger.warning(f"[{safe_guild_name}] Voice session invalidated (4006), will retry connection on next activity")
+                await self._cleanup_voice_connection(member.guild)
+            else:
+                self.logger.warning(f"[{safe_guild_name}] Voice connection closed with code {error.code}: {error}")
+                await self._cleanup_voice_connection(member.guild)
+        else:
+            self.logger.error(f"[{safe_guild_name}] Voice state update error: {error}")
+
+        # Record the error in New Relic
+        newrelic.agent.record_custom_metric('Custom/Discord/VoiceStateErrors', 1)
+        newrelic.agent.add_custom_attributes({
+            'error.type': type(error).__name__,
+            'error.code': getattr(error, 'code', None),
+            'guild.id': member.guild.id,
+            'guild.name': safe_guild_name
+        })
 
     def _is_human_member(self, member: discord.Member) -> bool:
         """Check if a member is a real human user (not bot, app, or system user)."""
