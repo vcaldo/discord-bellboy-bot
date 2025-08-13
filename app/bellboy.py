@@ -42,6 +42,9 @@ except ImportError:
     TTS_AVAILABLE = False
     TTSManager = None
 
+# Import presence manager
+from presence_manager import PresenceManager
+
 # Configuration
 DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
 LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO').upper()
@@ -80,6 +83,9 @@ class BellboyBot(discord.Client):
         # Set up logging
         self._setup_logging()
         self.logger = logging.getLogger('bellboy')
+
+        # Initialize presence manager
+        self.presence_manager = PresenceManager()
 
         # Initialize Coqui TTS
         self._init_tts()
@@ -152,19 +158,11 @@ class BellboyBot(discord.Client):
 
     def _count_human_members(self, channel: discord.VoiceChannel) -> int:
         """Count non-bot members in a voice channel, excluding all bots and applications."""
-        if channel is None:
-            return 0
-
-        # Filter out bots, applications, and the bot itself
-        human_members = [member for member in channel.members if self._is_human_member(member)]
-
-        member_names = [m.display_name for m in human_members]
-        self.logger.debug(f"Channel '{channel.name}' has {len(human_members)} human members: {member_names}")
-        return len(human_members)
+        return self.presence_manager.count_human_members(channel)
 
     def _is_monitoring_guild(self, guild: discord.Guild) -> bool:
         """Check if the bot should monitor this guild."""
-        return True
+        return self.presence_manager.is_monitoring_guild(guild)
 
     @newrelic.agent.function_trace()
     async def create_and_play_tts(self, message_type: str, guild: discord.Guild, **kwargs) -> None:
@@ -249,21 +247,7 @@ class BellboyBot(discord.Client):
             Tuple of (busiest_channel, member_count).
             Returns (None, 0) if no channels have members.
         """
-        busiest_channel = None
-        max_members = 0
-
-        for channel in guild.voice_channels:
-            # Skip the ignored channel if it's configured
-            if IGNORED_CHANNEL_ID and str(channel.id) == IGNORED_CHANNEL_ID:
-                self.logger.debug(f"[{self._safe_guild_name(guild)}] Skipping ignored channel: {channel.name} (ID: {channel.id})")
-                continue
-                
-            member_count = self._count_human_members(channel)
-            if member_count > max_members:
-                max_members = member_count
-                busiest_channel = channel
-
-        return busiest_channel, max_members
+        return await self.presence_manager.find_busiest_voice_channel(guild)
 
     @newrelic.agent.function_trace()
     async def play_notification_audio(self, audio_path: str, guild: discord.Guild) -> None:
@@ -336,20 +320,15 @@ class BellboyBot(discord.Client):
         try:
             busiest_channel, max_members = await self.find_busiest_voice_channel(guild)
 
-            # Only proceed if there are users in voice channels
-            if not busiest_channel or max_members == 0:
-                return
-
-            # If bot is not connected, join the busiest channel
-            if not guild.voice_client:
+            # Check if bot should join a channel
+            if self.presence_manager.should_join_channel(guild, busiest_channel, max_members):
                 await busiest_channel.connect()
                 safe_guild_name = self._safe_guild_name(guild)
                 self.logger.info(f"[{safe_guild_name}] Bot joined busiest channel: {busiest_channel.name} ({max_members} members)")
                 return
 
-            # If bot is connected but not in the busiest channel, move there
-            current_channel = guild.voice_client.channel
-            if current_channel != busiest_channel:
+            # Check if bot should move to a different channel
+            if self.presence_manager.should_move_to_channel(guild, busiest_channel, max_members):
                 await guild.voice_client.move_to(busiest_channel)
                 safe_guild_name = self._safe_guild_name(guild)
                 self.logger.info(f"[{safe_guild_name}] Bot moved to busier channel: {busiest_channel.name} ({max_members} members)")
@@ -364,28 +343,17 @@ class BellboyBot(discord.Client):
     async def leave_if_empty(self, guild: discord.Guild) -> None:
         """Leave voice channel if no human members are present."""
         try:
-            # Check if bot is connected
-            if not guild.voice_client or not guild.voice_client.is_connected():
-                self.logger.debug(f"[{self._safe_guild_name(guild)}] Bot not connected to any voice channel")
-                return
-
-            current_channel = guild.voice_client.channel
-
             # Add a small delay to ensure discord state is updated
             import asyncio
             await asyncio.sleep(0.5)
 
-            human_count = self._count_human_members(current_channel)
+            # Check if bot should leave the current channel
+            should_leave, current_channel = self.presence_manager.should_leave_channel(guild)
 
-            safe_guild_name = self._safe_guild_name(guild)
-            self.logger.debug(f"[{safe_guild_name}] Checking if should leave {current_channel.name}: {human_count} human members")
-
-            # Leave if no human members
-            if human_count == 0:
+            if should_leave and current_channel:
                 await guild.voice_client.disconnect()
+                safe_guild_name = self._safe_guild_name(guild)
                 self.logger.info(f"[{safe_guild_name}] Bot left empty channel: {current_channel.name}")
-            else:
-                self.logger.debug(f"[{safe_guild_name}] Staying in {current_channel.name} with {human_count} human members")
 
         except Exception as e:
             safe_guild_name = self._safe_guild_name(guild)
@@ -404,6 +372,9 @@ class BellboyBot(discord.Client):
     async def on_ready(self):
         """Called when the bot is ready."""
         self.logger.info(f'Bot logged in as {self.user} (ID: {self.user.id})')
+
+        # Set bot user ID in presence manager
+        self.presence_manager.set_bot_user_id(self.user.id)
 
         # Initialize TTS manager asynchronously with timeout
         if self.tts_manager:
@@ -575,23 +546,19 @@ class BellboyBot(discord.Client):
 
     def _is_human_member(self, member: discord.Member) -> bool:
         """Check if a member is a real human user (not bot, app, or system user)."""
-        # Skip if it's a bot
-        if member.bot:
-            return False
+        return self.presence_manager.is_human_member(member)
 
-        # Skip if it's the bot itself (extra safety check)
-        if self.user and member.id == self.user.id:
-            return False
+    def get_guild_presence_summary(self, guild: discord.Guild) -> dict:
+        """
+        Get a summary of voice channel activity in the guild.
 
-        # Skip if it's a system user or application (if the attribute exists)
-        if hasattr(member, 'system') and member.system:
-            return False
+        Args:
+            guild: Discord guild to analyze
 
-        # Skip if it's a webhook user
-        if hasattr(member, 'discriminator') and member.discriminator == '0000':
-            return False
-
-        return True
+        Returns:
+            dict: Summary of channel activity including member counts
+        """
+        return self.presence_manager.get_channel_activity_summary(guild)
 
     @newrelic.agent.background_task(name='Discord.Bot.TestTransaction')
     def _test_newrelic_transaction(self):
