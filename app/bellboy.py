@@ -158,11 +158,11 @@ class BellboyBot(discord.Client):
 
     def _count_human_members(self, channel: discord.VoiceChannel) -> int:
         """Count non-bot members in a voice channel, excluding all bots and applications."""
-        return self.presence_manager.count_human_members(channel)
+        return self.presence_manager.count_humans_in_channel(channel)
 
     def _is_monitoring_guild(self, guild: discord.Guild) -> bool:
         """Check if the bot should monitor this guild."""
-        return self.presence_manager.is_monitoring_guild(guild)
+        return True  # Simplified - monitor all guilds
 
     @newrelic.agent.function_trace()
     async def create_and_play_tts(self, message_type: str, guild: discord.Guild, **kwargs) -> None:
@@ -247,7 +247,7 @@ class BellboyBot(discord.Client):
             Tuple of (busiest_channel, member_count).
             Returns (None, 0) if no channels have members.
         """
-        return await self.presence_manager.find_busiest_voice_channel(guild)
+        return self.presence_manager.find_most_active_channel(guild)
 
     @newrelic.agent.function_trace()
     async def play_notification_audio(self, audio_path: str, guild: discord.Guild) -> None:
@@ -321,14 +321,14 @@ class BellboyBot(discord.Client):
             busiest_channel, max_members = await self.find_busiest_voice_channel(guild)
 
             # Check if bot should join a channel
-            if self.presence_manager.should_join_channel(guild, busiest_channel, max_members):
+            if self.presence_manager.should_bot_join(guild, busiest_channel, max_members):
                 await busiest_channel.connect()
                 safe_guild_name = self._safe_guild_name(guild)
                 self.logger.info(f"[{safe_guild_name}] Bot joined busiest channel: {busiest_channel.name} ({max_members} members)")
                 return
 
             # Check if bot should move to a different channel
-            if self.presence_manager.should_move_to_channel(guild, busiest_channel, max_members):
+            if self.presence_manager.should_bot_move(guild, busiest_channel, max_members):
                 await guild.voice_client.move_to(busiest_channel)
                 safe_guild_name = self._safe_guild_name(guild)
                 self.logger.info(f"[{safe_guild_name}] Bot moved to busier channel: {busiest_channel.name} ({max_members} members)")
@@ -348,7 +348,7 @@ class BellboyBot(discord.Client):
             await asyncio.sleep(0.5)
 
             # Check if bot should leave the current channel
-            should_leave, current_channel = self.presence_manager.should_leave_channel(guild)
+            should_leave, current_channel = self.presence_manager.should_bot_leave(guild)
 
             if should_leave and current_channel:
                 await guild.voice_client.disconnect()
@@ -546,7 +546,7 @@ class BellboyBot(discord.Client):
 
     def _is_human_member(self, member: discord.Member) -> bool:
         """Check if a member is a real human user (not bot, app, or system user)."""
-        return self.presence_manager.is_human_member(member)
+        return self.presence_manager.is_human_user(member)
 
     def get_guild_presence_summary(self, guild: discord.Guild) -> dict:
         """
@@ -558,7 +558,59 @@ class BellboyBot(discord.Client):
         Returns:
             dict: Summary of channel activity including member counts
         """
-        return self.presence_manager.get_channel_activity_summary(guild)
+        return self.presence_manager.get_guild_summary(guild)
+
+    async def handle_voice_update_simplified(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
+        """
+        Simplified voice update handler using the new presence manager.
+
+        Args:
+            member: Member whose voice state changed
+            before: Previous voice state
+            after: New voice state
+        """
+        try:
+            # Process the voice update and get recommended actions
+            action_info = self.presence_manager.process_voice_update(
+                member.guild,
+                member,
+                before.channel,
+                after.channel
+            )
+
+            # Skip if no action needed
+            if action_info['action'] in ['ignore', 'stay']:
+                return
+
+            # Log the event
+            safe_guild_name = self._safe_guild_name(member.guild)
+            event_type = action_info['event_type']
+            member_name = action_info['member_name']
+
+            self.logger.info(f"[{safe_guild_name}] {member_name} {event_type} - Action: {action_info['action']}")
+
+            # Execute the recommended action
+            if action_info['action'] == 'join' and action_info['target_channel']:
+                await action_info['target_channel'].connect()
+                self.logger.info(f"[{safe_guild_name}] Bot joined channel: {action_info['target_channel'].name}")
+
+            elif action_info['action'] == 'move' and action_info['target_channel']:
+                await member.guild.voice_client.move_to(action_info['target_channel'])
+                self.logger.info(f"[{safe_guild_name}] Bot moved to channel: {action_info['target_channel'].name}")
+
+            elif action_info['action'] == 'leave':
+                await member.guild.voice_client.disconnect()
+                self.logger.info(f"[{safe_guild_name}] Bot left empty channel")
+
+            # Generate TTS audio if configured
+            try:
+                await self.create_and_play_tts(event_type, member.guild, display_name=member.display_name, member_id=member.id)
+            except Exception as tts_error:
+                self.logger.debug(f"[{safe_guild_name}] TTS error: {tts_error}")
+
+        except Exception as e:
+            safe_guild_name = self._safe_guild_name(member.guild)
+            self.logger.error(f"[{safe_guild_name}] Error in simplified voice update handler: {e}")
 
     @newrelic.agent.background_task(name='Discord.Bot.TestTransaction')
     def _test_newrelic_transaction(self):
