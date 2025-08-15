@@ -49,8 +49,33 @@ class TTSProvider(ABC):
     def get_message(self, message_type: str, **kwargs) -> str:
         """Get a formatted message for the given type."""
         messages = self.config.get('messages', {})
-        template = messages.get(message_type, f"{message_type} {{display_name}}")
+
+        # Check if this is a special user
+        member_id = kwargs.get('member_id')
+        if member_id and self._is_special_user(str(member_id)):
+            # Try to get alternate message first
+            alt_message_type = f"{message_type}_alt"
+            if alt_message_type in messages:
+                template = messages[alt_message_type]
+            else:
+                # Fallback to regular message if no alternate exists
+                template = messages.get(message_type, f"{message_type} {{display_name}}")
+        else:
+            # Use regular message for normal users
+            template = messages.get(message_type, f"{message_type} {{display_name}}")
+
         return template.format(**kwargs)
+
+    def _is_special_user(self, user_id: str) -> bool:
+        """Check if a user ID is in the special users list."""
+        import os
+        special_users = os.getenv('SPECIAL_USERS', '')
+        if not special_users.strip():
+            return False
+
+        # Parse comma-separated user IDs
+        special_user_ids = [uid.strip() for uid in special_users.split(',') if uid.strip()]
+        return user_id in special_user_ids
 
 
 class CoquiTTSProvider(TTSProvider):

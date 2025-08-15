@@ -67,13 +67,31 @@ providers:
       join: "Welcome {display_name}"        # User joins channel
       leave: "Goodbye {display_name}"       # User leaves channel
       move: "Moved channels {display_name}" # User moves between channels
+      join_alt: "The boss {display_name} has arrived!"    # Alternate message for special users
+      leave_alt: "The boss {display_name} has left!"      # Alternate message for special users
+      move_alt: "The boss {display_name} switched channels!" # Alternate message for special users
 ```
+
+### Special User Messages
+
+You can configure special messages for specific users (e.g., server owners, VIPs):
+
+1. Add alternate message types (ending with `_alt`) to your `tts-config.yaml`
+2. Set the `SPECIAL_USERS` environment variable with Discord user IDs:
+   ```bash
+   SPECIAL_USERS=123456789012345678,987654321098765432
+   ```
+
+To get a Discord user ID:
+1. Enable Developer Mode in Discord (User Settings → Advanced → Developer Mode)
+2. Right-click on the user and select "Copy ID"
 
 ### Environment Variables
 
 - `TTS_PROVIDER`: Set to `coqui` (more providers coming soon)
 - `DISCORD_TOKEN`: Your Discord bot token
 - `LOG_LEVEL`: Logging level (INFO, DEBUG, WARNING, ERROR)
+- `SPECIAL_USERS`: Comma-separated Discord user IDs for alternate messages (optional)
 - `IGNORED_CHANNEL_ID`: Channel ID to ignore when selecting busiest channel (optional)
 
 ## Testing the Setup

@@ -78,6 +78,7 @@ default_provider: "coqui"
 | `DISCORD_TOKEN` | Your Discord bot token | Required |
 | `TTS_PROVIDER` | TTS provider to use | `coqui` |
 | `LOG_LEVEL` | Logging level | `INFO` |
+| `SPECIAL_USERS` | Comma-separated Discord user IDs for alternate messages | Optional |
 | `NEW_RELIC_LICENSE_KEY` | New Relic monitoring (optional) | Disabled |
 
 ## Discord Bot Setup
