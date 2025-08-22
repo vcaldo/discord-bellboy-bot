@@ -15,9 +15,12 @@ providers:
       audio_quality: "128k"
       volume: "1.1"
     messages:
-      join: "Oobaaaa, {display_name} entrou"
+      join: "Oobaaaa, {display_name} entrou!"
       leave: "Que pena, {display_name} saiu"
       move: "O tal do {display_name} trocou de canal"
+      join_alt: "Que pena, {display_name} entrou"
+      leave_alt: "Oobaaaa, {display_name} saiu!"
+      move_alt: "O tal do {display_name} trocou de canal"
 
   # Placeholder for future providers
   # elevenlabs:

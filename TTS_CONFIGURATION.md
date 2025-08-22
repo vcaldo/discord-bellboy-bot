@@ -59,6 +59,28 @@ The TTS system supports three message types:
 
 Each message type can use placeholders like `{display_name}` that will be replaced with actual values.
 
+### Special User Messages
+
+You can define alternate messages for specific users by:
+
+1. Adding alternate message types in your provider configuration:
+   ```yaml
+   messages:
+     join: "Welcome {display_name}"
+     leave: "Goodbye {display_name}"
+     move: "Moved channels {display_name}"
+     join_alt: "The boss {display_name} has arrived!"
+     leave_alt: "The boss {display_name} has left!"
+     move_alt: "The boss {display_name} switched channels!"
+   ```
+
+2. Setting the `SPECIAL_USERS` environment variable with comma-separated Discord user IDs:
+   ```bash
+   SPECIAL_USERS=123456789012345678,987654321098765432
+   ```
+
+When a user in the `SPECIAL_USERS` list joins, leaves, or moves, the bot will use the `_alt` version of the message if it exists. If no alternate message is defined, it falls back to the regular message.
+
 ## Adding New Providers
 
 To add a new TTS provider:
