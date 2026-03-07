@@ -25,7 +25,7 @@ providers:
   edge:
     name: "Edge TTS"
     enabled: true
-    voice: "pt-BR-FranciscaNeural"
+    voice: "pt-PT-DuarteNeural"
     settings:
       output_format: "mp3"
     messages:
