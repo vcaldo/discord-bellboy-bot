@@ -31,10 +31,15 @@ RUN apt-get update && apt-get install -y \
     libportaudio2 \
     libportaudiocpp0 \
     portaudio19-dev \
+    rustc \
+    cargo \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first to leverage Docker cache
 COPY requirements.txt .
+
+# Upgrade pip to ensure prebuilt wheels are preferred over source builds
+RUN pip install --upgrade pip
 
 # Install all Python dependencies from requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
