@@ -29,7 +29,7 @@ providers:
     settings:
       output_format: "mp3"
     messages:
-      join: "Oobaaaa, {display_name} entrou!"
+      join: "Oba, {display_name} entrou!"
       leave: "Que pena, {display_name} saiu"
       move: "O tal do {display_name} trocou de canal"
       join_alt: "Ah que bosta, não acredito, esse merda entrou {display_name}"
