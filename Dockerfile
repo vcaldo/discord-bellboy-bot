@@ -1,4 +1,3 @@
-# Use Python 3.11 instead of 3.12 for better compatibility
 FROM python:3.11-slim
 
 # Set environment variables
