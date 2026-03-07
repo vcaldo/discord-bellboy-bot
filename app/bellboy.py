@@ -424,8 +424,11 @@ class BellboyBot(discord.Client):
                     # Log cache statistics
                     if self.tts_manager.cache_manager:
                         cache_stats = self.tts_manager.cache_manager.get_cache_stats()
-                        self.logger.info(f"TTS Cache: {cache_stats['current_files']}/{cache_stats['max_files']} files "
-                                       f"({cache_stats['usage_percent']}%), {cache_stats['total_size_mb']}MB")
+                        self.logger.info(
+                            f"TTS Cache: {cache_stats['current_files']} files, "
+                            f"{cache_stats['total_size_mb']}MB/{cache_stats['max_size_mb']:.0f}MB "
+                            f"({cache_stats['usage_percent']}%)"
+                        )
                 else:
                     self.logger.warning("TTS Manager initialization failed - TTS functionality disabled")
                     self.logger.warning("Bot will continue without voice announcements")
