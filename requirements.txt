@@ -14,3 +14,6 @@ soundfile>=0.12.1
 
 # Coqui TTS - using stable version
 TTS==0.17.8
+
+# Edge TTS - Microsoft Edge neural voices
+edge-tts>=6.1.9

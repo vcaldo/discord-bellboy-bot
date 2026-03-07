@@ -20,6 +20,13 @@ except ImportError:
     COQUI_AVAILABLE = False
     TTS = None
 
+try:
+    import edge_tts
+    EDGE_TTS_AVAILABLE = True
+except ImportError:
+    EDGE_TTS_AVAILABLE = False
+    edge_tts = None
+
 
 class TTSProvider(ABC):
     """Abstract base class for TTS providers."""
@@ -217,6 +224,41 @@ class CoquiTTSProvider(TTSProvider):
             return False
 
 
+class EdgeTTSProvider(TTSProvider):
+    """Edge TTS provider implementation using Microsoft neural voices."""
+
+    @property
+    def provider_name(self) -> str:
+        return "edge"
+
+    async def initialize(self) -> bool:
+        """Initialize Edge TTS."""
+        if not EDGE_TTS_AVAILABLE:
+            self.logger.warning("edge-tts not available - install with: pip install edge-tts")
+            return False
+        self.is_initialized = True
+        self.logger.info("Edge TTS initialized successfully")
+        return True
+
+    async def synthesize(self, text: str, output_path: str, **kwargs) -> bool:
+        """Synthesize text using Edge TTS."""
+        if not self.is_initialized:
+            self.logger.error("Edge TTS not initialized")
+            return False
+
+        try:
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+            voice = self.config.get('voice', 'pt-BR-FranciscaNeural')
+            self.logger.debug(f"Starting Edge TTS synthesis for text length: {len(text)} characters")
+            communicate = edge_tts.Communicate(text, voice)
+            await communicate.save(output_path)
+            self.logger.debug(f"Edge TTS synthesis completed: {os.path.basename(output_path)}")
+            return True
+        except Exception as e:
+            self.logger.error(f"Edge TTS synthesis failed: {e}")
+            return False
+
+
 class TTSCacheManager:
     """Manages TTS file caching."""
 
@@ -360,7 +402,8 @@ class TTSManager:
 
         # Provider registry
         self.providers = {
-            'coqui': CoquiTTSProvider
+            'coqui': CoquiTTSProvider,
+            'edge': EdgeTTSProvider,
         }
 
     def _load_config(self, config_path: str) -> Dict[str, Any]:
