@@ -20,6 +20,13 @@ except ImportError:
     COQUI_AVAILABLE = False
     TTS = None
 
+try:
+    import edge_tts
+    EDGE_TTS_AVAILABLE = True
+except ImportError:
+    EDGE_TTS_AVAILABLE = False
+    edge_tts = None
+
 
 class TTSProvider(ABC):
     """Abstract base class for TTS providers."""
@@ -217,6 +224,41 @@ class CoquiTTSProvider(TTSProvider):
             return False
 
 
+class EdgeTTSProvider(TTSProvider):
+    """Edge TTS provider implementation using Microsoft neural voices."""
+
+    @property
+    def provider_name(self) -> str:
+        return "edge"
+
+    async def initialize(self) -> bool:
+        """Initialize Edge TTS."""
+        if not EDGE_TTS_AVAILABLE:
+            self.logger.warning("edge-tts not available - install with: pip install edge-tts")
+            return False
+        self.is_initialized = True
+        self.logger.info("Edge TTS initialized successfully")
+        return True
+
+    async def synthesize(self, text: str, output_path: str, **kwargs) -> bool:
+        """Synthesize text using Edge TTS."""
+        if not self.is_initialized:
+            self.logger.error("Edge TTS not initialized")
+            return False
+
+        try:
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+            voice = self.config.get('voice', 'pt-BR-FranciscaNeural')
+            self.logger.debug(f"Starting Edge TTS synthesis for text length: {len(text)} characters")
+            communicate = edge_tts.Communicate(text, voice)
+            await communicate.save(output_path)
+            self.logger.debug(f"Edge TTS synthesis completed: {os.path.basename(output_path)}")
+            return True
+        except Exception as e:
+            self.logger.error(f"Edge TTS synthesis failed: {e}")
+            return False
+
+
 class TTSCacheManager:
     """Manages TTS file caching."""
 
@@ -229,10 +271,16 @@ class TTSCacheManager:
         cache_dir = self.config.get('directory', '/app/assets')
         os.makedirs(cache_dir, exist_ok=True)
 
-        # Log cache configuration
-        max_files = self.config.get('max_files', 50)
+        # Determine max cache size: env var > config > default (512MB)
+        env_max = os.getenv('TTS_CACHE_MAX_SIZE_MB')
+        if env_max is not None:
+            max_size_mb = int(env_max)
+        else:
+            max_size_mb = self.config.get('max_size_mb', 512)
+        self.max_size_bytes = max_size_mb * 1024 * 1024
+
         enabled = self.config.get('enabled', True)
-        self.logger.info(f"TTS Cache initialized: enabled={enabled}, max_files={max_files}, directory={cache_dir}")
+        self.logger.info(f"TTS Cache initialized: enabled={enabled}, max_size_mb={max_size_mb}, directory={cache_dir}")
 
         # Load existing cache files if any
         self._scan_existing_cache()
@@ -261,29 +309,46 @@ class TTSCacheManager:
             self.logger.warning(f"Could not invalidate cache file {os.path.basename(file_path)}: {e}")
             return False
 
-    def _cleanup_if_needed(self) -> None:
-        """Clean up old cache files if limit exceeded."""
-        max_files = self.config.get('max_files', 50)
+    def _get_total_size(self) -> int:
+        """Calculate total size in bytes of all tracked cache files."""
+        total = 0
+        for file_path in self.cache:
+            try:
+                if os.path.exists(file_path):
+                    total += os.path.getsize(file_path)
+            except OSError:
+                pass
+        return total
 
-        if len(self.cache) <= max_files:
+    def _cleanup_if_needed(self) -> None:
+        """Clean up old cache files if size limit exceeded."""
+        total_size = self._get_total_size()
+
+        if total_size <= self.max_size_bytes:
             return
 
-        # Sort by timestamp and remove oldest files
+        max_size_mb = self.max_size_bytes / (1024 * 1024)
+        self.logger.info(
+            f"Cache size limit exceeded ({total_size / (1024*1024):.1f}MB/{max_size_mb:.0f}MB), "
+            f"cleaning up oldest files"
+        )
+
+        # Sort by timestamp, remove oldest first until under limit
         sorted_cache = sorted(self.cache.items(), key=lambda x: x[1])
-        files_to_remove = sorted_cache[:len(self.cache) - max_files]
-
-        self.logger.info(f"Cache limit exceeded ({len(self.cache)}/{max_files}), cleaning up {len(files_to_remove)} old files")
-
-        for file_path, _ in files_to_remove:
+        for file_path, _ in sorted_cache:
+            if total_size <= self.max_size_bytes:
+                break
             try:
+                file_size = os.path.getsize(file_path) if os.path.exists(file_path) else 0
                 if os.path.exists(file_path):
                     os.remove(file_path)
                 del self.cache[file_path]
+                total_size -= file_size
                 self.logger.debug(f"Removed old cache file: {os.path.basename(file_path)}")
             except OSError as e:
                 self.logger.warning(f"Could not remove cache file {os.path.basename(file_path)}: {e}")
 
-        self.logger.info(f"Cache cleanup completed. Current cache size: {len(self.cache)}/{max_files}")
+        self.logger.info(f"Cache cleanup completed. Current size: {total_size / (1024*1024):.1f}MB/{max_size_mb:.0f}MB")
 
     def _scan_existing_cache(self) -> None:
         """Scan cache directory for existing files and add them to tracking."""
@@ -323,27 +388,18 @@ class TTSCacheManager:
     def get_cache_stats(self) -> Dict[str, Any]:
         """Get cache statistics."""
         cache_dir = self.config.get('directory', '/app/assets')
-        max_files = self.config.get('max_files', 50)
+        max_size_mb = round(self.max_size_bytes / (1024 * 1024), 0)
+        total_size = self._get_total_size()
+        total_size_mb = round(total_size / (1024 * 1024), 2)
 
-        stats = {
+        return {
             'enabled': self.config.get('enabled', True),
             'directory': cache_dir,
-            'max_files': max_files,
+            'max_size_mb': max_size_mb,
             'current_files': len(self.cache),
-            'usage_percent': round((len(self.cache) / max_files) * 100, 1) if max_files > 0 else 0
+            'total_size_mb': total_size_mb,
+            'usage_percent': round((total_size / self.max_size_bytes) * 100, 1) if self.max_size_bytes > 0 else 0,
         }
-
-        # Calculate total cache size
-        total_size = 0
-        for file_path in self.cache.keys():
-            try:
-                if os.path.exists(file_path):
-                    total_size += os.path.getsize(file_path)
-            except OSError:
-                pass
-
-        stats['total_size_mb'] = round(total_size / (1024 * 1024), 2)
-        return stats
 
 
 class TTSManager:
@@ -360,7 +416,8 @@ class TTSManager:
 
         # Provider registry
         self.providers = {
-            'coqui': CoquiTTSProvider
+            'coqui': CoquiTTSProvider,
+            'edge': EdgeTTSProvider,
         }
 
     def _load_config(self, config_path: str) -> Dict[str, Any]:
@@ -403,7 +460,7 @@ class TTSManager:
             'default_provider': 'coqui',
             'cache': {
                 'enabled': True,
-                'max_files': 50,
+                'max_size_mb': 512,
                 'directory': '/app/assets'
             }
         }

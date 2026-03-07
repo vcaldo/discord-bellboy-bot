@@ -22,6 +22,20 @@ providers:
       leave_alt: "Oobaaaa, {display_name} saiu!"
       move_alt: "O tal do {display_name} trocou de canal"
 
+  edge:
+    name: "Edge TTS"
+    enabled: true
+    voice: "pt-BR-FranciscaNeural"
+    settings:
+      output_format: "mp3"
+    messages:
+      join: "Oba, {display_name} entrou!"
+      leave: "Que pena, {display_name} saiu"
+      move: "O tal do {display_name} trocou de canal"
+      join_alt: "Ah que bosta, não acredito, esse merda entrou {display_name}"
+      leave_alt: "Ainda bem, graças a Deus, que o coisa ruim, embaixador do diabo foi embora {display_name}"
+      move_alt: "O tal do {display_name} trocou de canal"
+
   # Placeholder for future providers
   # elevenlabs:
   #   name: "ElevenLabs"
@@ -59,5 +73,5 @@ default_provider: "coqui"
 # Cache settings
 cache:
   enabled: true
-  max_files: 50
+  max_size_mb: 512
   directory: "/app/assets"
