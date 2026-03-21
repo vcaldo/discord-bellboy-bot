@@ -3,8 +3,9 @@ import logging
 import os
 import subprocess
 import tempfile
+import time
 from datetime import datetime
-from typing import Optional, Tuple
+from typing import Dict, Optional, Tuple
 from dotenv import load_dotenv
 
 # Load environment variables first
@@ -83,6 +84,9 @@ class BellboyBot(discord.Client):
 
         # Initialize Coqui TTS
         self._init_tts()
+
+        # Per-user cooldown tracking: member_id -> last salute timestamp
+        self._user_cooldowns: Dict[int, float] = {}
 
         # Test New Relic transaction
         if NEW_RELIC_LICENSE_KEY:
@@ -166,6 +170,29 @@ class BellboyBot(discord.Client):
         """Check if the bot should monitor this guild."""
         return True
 
+    def _get_cooldown_seconds(self) -> float:
+        """Get the configured salute cooldown in seconds."""
+        env_val = os.getenv('SALUTE_COOLDOWN_SECONDS')
+        if env_val is not None:
+            try:
+                return float(env_val)
+            except ValueError:
+                pass
+        if self.tts_manager:
+            config_val = self.tts_manager.config.get('cooldown_seconds')
+            if config_val is not None:
+                return float(config_val)
+        return 60.0
+
+    def _is_on_cooldown(self, member_id: int) -> bool:
+        """Return True if the member is still within the salute cooldown period."""
+        last = self._user_cooldowns.get(member_id, 0.0)
+        return (time.time() - last) < self._get_cooldown_seconds()
+
+    def _update_cooldown(self, member_id: int) -> None:
+        """Record that a salute was just played for this member."""
+        self._user_cooldowns[member_id] = time.time()
+
     @newrelic.agent.function_trace()
     async def create_and_play_tts(self, message_type: str, guild: discord.Guild, **kwargs) -> None:
         """
@@ -182,22 +209,29 @@ class BellboyBot(discord.Client):
                 self.logger.debug(f"[{self._safe_guild_name(guild)}] TTS not available for message: {message_type}")
                 return
 
-            # Generate a unique cache path for this message
-            member_id = kwargs.get('member_id', 'unknown')
-            cache_path = self.tts_manager.generate_cache_path(
-                f"{message_type}_{member_id}",
-                prefix=f"msg_{message_type}"
-            )
+            # Check per-user cooldown
+            member_id = kwargs.get('member_id')
+            if member_id and self._is_on_cooldown(member_id):
+                self.logger.debug(
+                    f"[{self._safe_guild_name(guild)}] Skipping salute for {kwargs.get('display_name', member_id)}: on cooldown"
+                )
+                return
 
-            # Log TTS request
-            display_name = kwargs.get('display_name', 'Unknown')
-            self.logger.debug(f"[{self._safe_guild_name(guild)}] TTS request: {message_type} for {display_name}")
+            # Resolve the message text first (random pick happens here)
+            text = self.tts_manager.get_message(message_type, **kwargs)
+            if not text:
+                return
 
-            # Create the TTS audio
-            success = await self.tts_manager.synthesize_message(message_type, cache_path, **kwargs)
+            # Cache path is based on the actual text so each variant is cached separately
+            cache_path = self.tts_manager.generate_cache_path(text, prefix=f"msg_{message_type}")
+
+            self.logger.debug(f"[{self._safe_guild_name(guild)}] TTS request: {message_type} for {kwargs.get('display_name', 'Unknown')}")
+
+            success = await self.tts_manager.synthesize_text(text, cache_path)
 
             if success:
-                # Play the generated TTS audio
+                if member_id:
+                    self._update_cooldown(member_id)
                 await self.play_notification_audio(cache_path, guild)
             else:
                 safe_guild_name = self._safe_guild_name(guild)
