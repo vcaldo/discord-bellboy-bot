@@ -7,6 +7,7 @@ import logging
 import tempfile
 import subprocess
 import hashlib
+import random
 import time
 from abc import ABC, abstractmethod
 from typing import Optional, Dict, Any
@@ -54,7 +55,7 @@ class TTSProvider(ABC):
         pass
 
     def get_message(self, message_type: str, **kwargs) -> str:
-        """Get a formatted message for the given type."""
+        """Get a formatted message for the given type, picked randomly from the list."""
         messages = self.config.get('messages', {})
 
         # Check if this is a special user
@@ -70,6 +71,10 @@ class TTSProvider(ABC):
         else:
             # Use regular message for normal users
             template = messages.get(message_type, f"{message_type} {{display_name}}")
+
+        # Support list of messages — pick one
+        if isinstance(template, list):
+            template = template[int(time.time() * 1000) % len(template)]
 
         return template.format(**kwargs)
 
@@ -601,6 +606,12 @@ class TTSManager:
         except (IndexError, AttributeError):
             self.logger.warning(f"Invalid cache filename format: {filename}")
             return False
+
+    def get_message(self, message_type: str, **kwargs) -> Optional[str]:
+        """Get a formatted message for the given type via the active provider."""
+        if not self.provider:
+            return None
+        return self.provider.get_message(message_type, **kwargs)
 
     @property
     def is_available(self) -> bool:

@@ -15,12 +15,23 @@ providers:
       audio_quality: "128k"
       volume: "1.1"
     messages:
-      join: "Oobaaaa, {display_name} entrou!"
-      leave: "Que pena, {display_name} saiu"
-      move: "O tal do {display_name} trocou de canal"
-      join_alt: "Que pena, {display_name} entrou"
-      leave_alt: "Oobaaaa, {display_name} saiu!"
-      move_alt: "O tal do {display_name} trocou de canal"
+      join:
+        - "Oobaaaa, {display_name} entrou!"
+        - "Eita, {display_name} apareceu!"
+        - "Olha quem chegou, {display_name}!"
+      leave:
+        - "Que pena, {display_name} saiu"
+        - "Tchau {display_name}, até mais!"
+        - "Até logo, {display_name}"
+      move:
+        - "O tal do {display_name} trocou de canal"
+        - "{display_name} foi pra outro canal"
+      join_alt:
+        - "Que pena, {display_name} entrou"
+      leave_alt:
+        - "Oobaaaa, {display_name} saiu!"
+      move_alt:
+        - "O tal do {display_name} trocou de canal"
 
   edge:
     name: "Edge TTS"
@@ -29,12 +40,20 @@ providers:
     settings:
       output_format: "mp3"
     messages:
-      join: "Oba, {display_name} entrou!"
-      leave: "Que pena, {display_name} saiu"
-      move: "O tal do {display_name} trocou de canal"
-      join_alt: "Ah que bosta, não acredito, esse merda entrou {display_name}"
-      leave_alt: "Ainda bem, graças a Deus, que o coisa ruim, embaixador do diabo foi embora {display_name}"
-      move_alt: "O tal do {display_name} trocou de canal"
+      join:
+        - "Bem vindo {display_name}"
+        - "Olha o {display_name} chegando!"
+      leave:
+        - "Deus te acompanhe, {display_name}"
+        - "Falou {display_name}, até mais"
+      move:
+        - "O tal do {display_name} trocou de canal"
+      join_alt:
+        - "Que pena, {display_name} entrou"
+      leave_alt:
+        - Obaaaa, {display_name} saiu!"
+      move_alt:
+        - "O tal do {display_name} trocou de canal"
 
   # Placeholder for future providers
   # elevenlabs:
@@ -69,6 +88,10 @@ providers:
 
 # Default provider (fallback if TTS_PROVIDER env var is not set)
 default_provider: "coqui"
+
+# Cooldown in seconds between salutes per user (prevents spam joining/leaving)
+# Can be overridden with SALUTE_COOLDOWN_SECONDS env var
+cooldown_seconds: 60
 
 # Cache settings
 cache:
