@@ -281,7 +281,7 @@ class TTSCacheManager:
         if env_max is not None:
             max_size_mb = int(env_max)
         else:
-            max_size_mb = self.config.get('max_size_mb', 512)
+            max_size_mb = self.config.get('max_size_mb', 1024)
         self.max_size_bytes = max_size_mb * 1024 * 1024
 
         enabled = self.config.get('enabled', True)
@@ -465,7 +465,7 @@ class TTSManager:
             'default_provider': 'coqui',
             'cache': {
                 'enabled': True,
-                'max_size_mb': 512,
+                'max_size_mb': 1024,
                 'directory': '/app/assets'
             }
         }
