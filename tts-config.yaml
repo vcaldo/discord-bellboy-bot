@@ -96,5 +96,5 @@ cooldown_seconds: 60
 # Cache settings
 cache:
   enabled: true
-  max_size_mb: 512
+  max_size_mb: 1024
   directory: "/app/assets"
