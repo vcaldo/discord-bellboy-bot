@@ -78,6 +78,8 @@ default_provider: "coqui"
 | `DISCORD_TOKEN` | Your Discord bot token | Required |
 | `TTS_PROVIDER` | TTS provider to use | `coqui` |
 | `LOG_LEVEL` | Logging level | `INFO` |
+| `IGNORED_CHANNEL_ID` | Voice channel ID to skip when finding the busiest channel | Optional |
+| `IGNORED_USERS` | Comma-separated Discord user IDs to never announce | Optional |
 | `SPECIAL_USERS` | Comma-separated Discord user IDs for alternate messages | Optional |
 | `NEW_RELIC_LICENSE_KEY` | New Relic monitoring (optional) | Disabled |
 
