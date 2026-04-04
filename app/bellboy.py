@@ -48,6 +48,7 @@ DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
 LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO').upper()
 TTS_PROVIDER = os.getenv('TTS_PROVIDER', 'coqui')  # Default to coqui
 IGNORED_CHANNEL_ID = os.getenv('IGNORED_CHANNEL_ID')  # Channel ID to ignore when selecting busiest channel
+IGNORED_USERS = os.getenv('IGNORED_USERS', '')  # Comma-separated user IDs to never announce
 
 # Constants
 LOGS_DIR = 'logs'
@@ -547,6 +548,11 @@ class BellboyBot(discord.Client):
                 newrelic.agent.record_custom_metric('Custom/Discord/BotVoiceActivity', 1)
                 return
 
+            # Skip ignored users
+            if self._is_ignored_user(member):
+                self.logger.debug(f"[{self._safe_guild_name(member.guild)}] Ignoring voice activity for {member.id}")
+                return
+
             # Record human voice activity
             newrelic.agent.record_custom_metric('Custom/Discord/HumanVoiceActivity', 1)
 
@@ -609,6 +615,13 @@ class BellboyBot(discord.Client):
         newrelic.agent.notice_error()
 
         self.logger.error(f'An error occurred in event {event}', exc_info=True)
+
+    def _is_ignored_user(self, member: discord.Member) -> bool:
+        """Check if a member is in the ignored users list."""
+        if not IGNORED_USERS.strip():
+            return False
+        ignored_ids = [uid.strip() for uid in IGNORED_USERS.split(',') if uid.strip()]
+        return str(member.id) in ignored_ids
 
     def _is_human_member(self, member: discord.Member) -> bool:
         """Check if a member is a real human user (not bot, app, or system user)."""
