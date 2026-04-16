@@ -1,4 +1,6 @@
+import asyncio
 import discord
+import json
 import logging
 import os
 import subprocess
@@ -55,6 +57,11 @@ LOGS_DIR = 'logs'
 LOG_DATE_FORMAT = '%Y%m%d'
 LOG_MESSAGE_FORMAT = '%(asctime)s | %(levelname)s | %(message)s'
 
+# Health check configuration
+HEALTH_FILE = '/tmp/bellboy_health.json'
+HEALTH_CHECK_INTERVAL = 15  # seconds between health writes
+VOICE_STALE_THRESHOLD = 120  # seconds before considering voice connection stale
+
 # FFmpeg options for audio playback
 FFMPEG_OPTIONS = {
     'before_options': '-nostdin',
@@ -89,9 +96,111 @@ class BellboyBot(discord.Client):
         # Per-user cooldown tracking: member_id -> last salute timestamp
         self._user_cooldowns: Dict[int, float] = {}
 
+        # Health tracking
+        self._last_voice_activity: float = 0.0  # timestamp of last successful voice operation
+        self._bot_ready: bool = False
+
         # Test New Relic transaction
         if NEW_RELIC_LICENSE_KEY:
             self._test_newrelic_transaction()
+
+    def _write_health(self) -> None:
+        """Write current health status to a file for Docker healthcheck."""
+        try:
+            health = {
+                'timestamp': time.time(),
+                'bot_ready': self._bot_ready,
+                'guilds': [],
+            }
+            if self._bot_ready:
+                for guild in self.guilds:
+                    guild_info = {
+                        'id': guild.id,
+                        'name': self._safe_guild_name(guild),
+                        'voice_connected': False,
+                        'voice_playing': False,
+                    }
+                    if guild.voice_client:
+                        guild_info['voice_connected'] = guild.voice_client.is_connected()
+                        guild_info['voice_playing'] = guild.voice_client.is_playing()
+                    health['guilds'].append(guild_info)
+
+            # Atomic write via temp file
+            tmp = HEALTH_FILE + '.tmp'
+            with open(tmp, 'w') as f:
+                json.dump(health, f)
+            os.replace(tmp, HEALTH_FILE)
+        except Exception:
+            pass  # health write must never crash the bot
+
+    async def _health_loop(self) -> None:
+        """Background task: periodically write health status and check for stale voice."""
+        await self.wait_until_ready()
+        self._bot_ready = True
+        self.logger.info("Health check loop started")
+
+        while not self.is_closed():
+            try:
+                self._write_health()
+                await self._check_stale_voice()
+            except Exception as e:
+                self.logger.error(f"Error in health loop: {e}")
+            await asyncio.sleep(HEALTH_CHECK_INTERVAL)
+
+    async def _check_stale_voice(self) -> None:
+        """Detect and recover from stale voice connections."""
+        for guild in self.guilds:
+            vc = guild.voice_client
+            if vc is None:
+                continue
+
+            # Check if the voice client thinks it's connected but the websocket is dead
+            try:
+                if not vc.is_connected():
+                    # discord.py is already trying to reconnect — give it time
+                    self.logger.debug(f"[{self._safe_guild_name(guild)}] Voice client exists but not connected, waiting for reconnect...")
+                    continue
+
+                # Voice client says connected — verify the underlying socket is alive
+                # If ws is None or closed, the connection is stale
+                if hasattr(vc, 'ws') and vc.ws is not None:
+                    if hasattr(vc.ws, 'open') and not vc.ws.open:
+                        self.logger.warning(f"[{self._safe_guild_name(guild)}] Stale voice WebSocket detected, forcing reconnect...")
+                        await self._force_voice_reconnect(guild)
+                        continue
+
+            except Exception as e:
+                self.logger.error(f"[{self._safe_guild_name(guild)}] Error checking voice state: {e}")
+
+    async def _force_voice_reconnect(self, guild: discord.Guild) -> None:
+        """Force disconnect and reconnect to the appropriate voice channel."""
+        safe_name = self._safe_guild_name(guild)
+        try:
+            # Remember where we should be
+            target_channel = None
+            if guild.voice_client and guild.voice_client.channel:
+                target_channel = guild.voice_client.channel
+
+            # Force disconnect
+            try:
+                await guild.voice_client.disconnect(force=True)
+            except Exception as e:
+                self.logger.warning(f"[{safe_name}] Error during force disconnect: {e}")
+
+            await asyncio.sleep(2)
+
+            # Find the best channel to rejoin
+            busiest, count = await self.find_busiest_voice_channel(guild)
+            rejoin_channel = busiest if busiest and count > 0 else target_channel
+
+            if rejoin_channel and self._count_human_members(rejoin_channel) > 0:
+                await rejoin_channel.connect()
+                self.logger.info(f"[{safe_name}] Reconnected to voice channel: {rejoin_channel.name}")
+            else:
+                self.logger.info(f"[{safe_name}] No active voice channel to rejoin after reconnect")
+
+        except Exception as e:
+            self.logger.error(f"[{safe_name}] Failed to force voice reconnect: {e}")
 
     def _setup_logging(self) -> None:
         """Set up logging to file and console."""
@@ -407,7 +516,6 @@ class BellboyBot(discord.Client):
             current_channel = guild.voice_client.channel
 
             # Add a small delay to ensure discord state is updated
-            import asyncio
             await asyncio.sleep(0.5)
 
             human_count = self._count_human_members(current_channel)
@@ -443,8 +551,6 @@ class BellboyBot(discord.Client):
         # Initialize TTS manager asynchronously with timeout
         if self.tts_manager:
             try:
-                import asyncio
-
                 self.logger.info("Initializing TTS Manager (this may take time on first run)...")
 
                 # Add timeout to prevent blocking Discord connection
@@ -479,6 +585,9 @@ class BellboyBot(discord.Client):
                 self.tts_manager = None
 
         self.logger.info('Monitoring voice channel activity...')
+
+        # Start the health check / voice watchdog loop
+        self.loop.create_task(self._health_loop())
 
         # Check if bot should join any channels on startup
         await self._check_initial_voice_channels()
