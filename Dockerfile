@@ -63,9 +63,9 @@ RUN useradd --create-home --shell /bin/bash app && \
 # Switch to non-root user
 USER app
 
-# Health check to ensure the bot is running
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python -c "import sys; sys.exit(0)" || exit 1
+# Health check — verifies the bot event loop is alive and Discord is connected
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD python healthcheck.py || exit 1
 
 # Command to run the application with New Relic monitoring
 CMD ["newrelic-admin", "run-program", "python", "bellboy.py"]
