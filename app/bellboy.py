@@ -99,6 +99,7 @@ class BellboyBot(discord.Client):
         # Health tracking
         self._last_voice_activity: float = 0.0  # timestamp of last successful voice operation
         self._bot_ready: bool = False
+        self._voice_disconnected_at: Dict[int, float] = {}  # guild_id -> timestamp of first disconnect
 
         # Test New Relic transaction
         if NEW_RELIC_LICENSE_KEY:
@@ -152,17 +153,31 @@ class BellboyBot(discord.Client):
         for guild in self.guilds:
             vc = guild.voice_client
             if vc is None:
+                self._voice_disconnected_at.pop(guild.id, None)
                 continue
 
-            # Check if the voice client thinks it's connected but the websocket is dead
             try:
                 if not vc.is_connected():
-                    # discord.py is already trying to reconnect — give it time
-                    self.logger.debug(f"[{self._safe_guild_name(guild)}] Voice client exists but not connected, waiting for reconnect...")
+                    # Track when we first noticed the disconnect
+                    first_seen = self._voice_disconnected_at.setdefault(guild.id, time.time())
+                    stale_for = time.time() - first_seen
+                    self.logger.debug(
+                        f"[{self._safe_guild_name(guild)}] Voice client not connected "
+                        f"(stale for {stale_for:.0f}s / {VOICE_STALE_THRESHOLD}s threshold)"
+                    )
+                    if stale_for >= VOICE_STALE_THRESHOLD:
+                        self.logger.warning(
+                            f"[{self._safe_guild_name(guild)}] Voice stuck in Retrying state for "
+                            f"{stale_for:.0f}s, forcing reconnect..."
+                        )
+                        self._voice_disconnected_at.pop(guild.id, None)
+                        await self._force_voice_reconnect(guild)
                     continue
 
+                # Connected — clear any stale tracker
+                self._voice_disconnected_at.pop(guild.id, None)
+
                 # Voice client says connected — verify the underlying socket is alive
-                # If ws is None or closed, the connection is stale
                 if hasattr(vc, 'ws') and vc.ws is not None:
                     if hasattr(vc.ws, 'open') and not vc.ws.open:
                         self.logger.warning(f"[{self._safe_guild_name(guild)}] Stale voice WebSocket detected, forcing reconnect...")
