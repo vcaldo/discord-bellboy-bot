@@ -100,30 +100,57 @@ class BellboyBot(discord.Client):
         self._last_voice_activity: float = 0.0  # timestamp of last successful voice operation
         self._bot_ready: bool = False
         self._voice_disconnected_at: Dict[int, float] = {}  # guild_id -> timestamp of first disconnect
+        self._start_time: float = time.time()  # process start, for uptime
+        self._total_voice_joins: int = 0  # cumulative voice channel joins/moves
+        self._total_voice_leaves: int = 0  # cumulative voice channel disconnects
+        self._total_tts_plays: int = 0  # cumulative successful audio playbacks
+        self._total_tts_errors: int = 0  # cumulative TTS/playback failures
+        self._last_join_at: float = 0.0  # epoch of most recent join
+        self._last_join_channel: str = ''  # channel name of most recent join
 
         # Test New Relic transaction
         if NEW_RELIC_LICENSE_KEY:
             self._test_newrelic_transaction()
 
     def _write_health(self) -> None:
-        """Write current health status to a file for Docker healthcheck."""
+        """Write current health status to a file for Docker healthcheck and metric collectors."""
         try:
             health = {
                 'timestamp': time.time(),
+                'start_time': self._start_time,
+                'uptime_sec': max(0.0, time.time() - self._start_time),
                 'bot_ready': self._bot_ready,
+                'bot_user_id': str(self.user.id) if self.user else '',
+                'bot_user_name': str(self.user) if self.user else '',
+                'gateway_latency_ms': round(self.latency * 1000.0, 2) if self._bot_ready else 0.0,
+                'guild_count': len(self.guilds) if self._bot_ready else 0,
+                'tts_provider': TTS_PROVIDER,
+                'tts_available': bool(self.tts_manager and getattr(self.tts_manager, 'is_available', False)),
+                'total_voice_joins': self._total_voice_joins,
+                'total_voice_leaves': self._total_voice_leaves,
+                'total_tts_plays': self._total_tts_plays,
+                'total_tts_errors': self._total_tts_errors,
+                'last_join_at': self._last_join_at,
+                'last_join_channel': self._last_join_channel,
                 'guilds': [],
             }
             if self._bot_ready:
                 for guild in self.guilds:
+                    vc = guild.voice_client
+                    channel = vc.channel if vc and vc.is_connected() else None
                     guild_info = {
-                        'id': guild.id,
+                        'id': str(guild.id),
                         'name': self._safe_guild_name(guild),
-                        'voice_connected': False,
-                        'voice_playing': False,
+                        'member_count': guild.member_count or 0,
+                        'voice_connected': bool(vc and vc.is_connected()),
+                        'voice_playing': bool(vc and vc.is_playing()),
+                        'voice_channel_id': str(channel.id) if channel else '',
+                        'voice_channel_name': channel.name if channel else '',
+                        'voice_channel_members': self._count_human_members(channel) if channel else 0,
+                        'voice_endpoint': getattr(vc, 'endpoint', '') or '' if vc else '',
+                        'voice_latency_ms': round(getattr(vc, 'latency', 0.0) * 1000.0, 2) if vc else 0.0,
+                        'voice_average_latency_ms': round(getattr(vc, 'average_latency', 0.0) * 1000.0, 2) if vc else 0.0,
                     }
-                    if guild.voice_client:
-                        guild_info['voice_connected'] = guild.voice_client.is_connected()
-                        guild_info['voice_playing'] = guild.voice_client.is_playing()
                     health['guilds'].append(guild_info)
 
             # Atomic write via temp file
@@ -472,15 +499,18 @@ class BellboyBot(discord.Client):
                 safe_guild_name = self._safe_guild_name(guild)
                 self.logger.debug(f"[{safe_guild_name}] Playing notification audio")
                 newrelic.agent.record_custom_metric('Custom/Audio/PlaybackSuccess', 1)
+                self._total_tts_plays += 1
 
             except discord.errors.ClientException as e:
                 newrelic.agent.record_custom_metric('Custom/Audio/DiscordClientError', 1)
                 newrelic.agent.notice_error()
+                self._total_tts_errors += 1
                 safe_guild_name = self._safe_guild_name(guild)
                 self.logger.error(f"[{safe_guild_name}] Discord client error playing audio: {e}")
             except Exception as e:
                 newrelic.agent.record_custom_metric('Custom/Audio/FFmpegError', 1)
                 newrelic.agent.notice_error()
+                self._total_tts_errors += 1
                 safe_guild_name = self._safe_guild_name(guild)
                 self.logger.error(f"[{safe_guild_name}] FFmpeg error playing audio: {e}")
 
@@ -502,6 +532,9 @@ class BellboyBot(discord.Client):
             # If bot is not connected, join the busiest channel
             if not guild.voice_client:
                 await busiest_channel.connect()
+                self._total_voice_joins += 1
+                self._last_join_at = time.time()
+                self._last_join_channel = busiest_channel.name
                 safe_guild_name = self._safe_guild_name(guild)
                 self.logger.info(f"[{safe_guild_name}] Bot joined busiest channel: {busiest_channel.name} ({max_members} members)")
                 return
@@ -510,6 +543,9 @@ class BellboyBot(discord.Client):
             current_channel = guild.voice_client.channel
             if current_channel != busiest_channel:
                 await guild.voice_client.move_to(busiest_channel)
+                self._total_voice_joins += 1
+                self._last_join_at = time.time()
+                self._last_join_channel = busiest_channel.name
                 safe_guild_name = self._safe_guild_name(guild)
                 self.logger.info(f"[{safe_guild_name}] Bot moved to busier channel: {busiest_channel.name} ({max_members} members)")
 
@@ -541,6 +577,7 @@ class BellboyBot(discord.Client):
             # Leave if no human members
             if human_count == 0:
                 await guild.voice_client.disconnect()
+                self._total_voice_leaves += 1
                 self.logger.info(f"[{safe_guild_name}] Bot left empty channel: {current_channel.name}")
             else:
                 self.logger.debug(f"[{safe_guild_name}] Staying in {current_channel.name} with {human_count} human members")
