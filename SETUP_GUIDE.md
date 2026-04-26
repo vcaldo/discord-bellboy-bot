@@ -1,6 +1,6 @@
-# Discord Bellboy Bot - TTS Provider Setup
+# Discord Bellboy Bot - Setup Guide
 
-This guide will help you set up and run the Discord Bellboy Bot with the new multi-provider TTS system.
+This guide helps you set up and run Discord Bellboy Bot with Edge TTS voice announcements.
 
 ## Quick Setup
 
@@ -18,20 +18,21 @@ Copy the example environment file and edit it:
 cp .env.example .env
 ```
 
-Edit `.env` and set your Discord token:
+Set your Discord bot token:
+
 ```bash
 DISCORD_TOKEN=your_actual_discord_token_here
-TTS_PROVIDER=coqui
 ```
 
-### 3. Configure TTS (Optional)
+### 3. Configure TTS
 
-The bot comes with a default `tts-config.yaml` file. You can customize:
+The bot uses Edge TTS only. Customize `tts-config.yaml` to change:
 
-- TTS messages (join/leave/move announcements)
-- Audio quality settings
-- Cache configuration
-- Provider-specific settings
+- Edge voice
+- Join, leave, and move announcement messages
+- Special-user alternate messages
+- Cache size and directory
+- Salute cooldown
 
 ### 4. Run the Bot
 
@@ -39,21 +40,23 @@ The bot comes with a default `tts-config.yaml` file. You can customize:
 python app/bellboy.py
 ```
 
-Or using the Docker setup:
+Or using Docker:
 
 ```bash
 docker-compose up --build
 ```
 
-## TTS Provider Configuration
+## TTS Configuration
 
-### Current Provider: Coqui TTS
+### Provider: Edge TTS
 
-The bot currently supports Coqui TTS as the default provider. The configuration in `tts-config.yaml` includes:
+The bot uses Microsoft Edge TTS via the `edge-tts` package as its only speech engine.
 
-- **Model**: `tts_models/en/ljspeech/fast_pitch` (English, fast generation)
+The default `tts-config.yaml` includes:
+
+- **Voice**: `pt-PT-DuarteNeural`
 - **Messages**: Portuguese announcements by default
-- **Audio Quality**: 128k MP3 output
+- **Audio format**: MP3
 - **Cache**: Automatic cleanup of old TTS files
 
 ### Customizing Messages
@@ -62,80 +65,64 @@ Edit the `messages` section in `tts-config.yaml`:
 
 ```yaml
 providers:
-  coqui:
+  edge:
     messages:
-      join: "Welcome {display_name}"        # User joins channel
-      leave: "Goodbye {display_name}"       # User leaves channel
-      move: "Moved channels {display_name}" # User moves between channels
-      join_alt: "The boss {display_name} has arrived!"    # Alternate message for special users
-      leave_alt: "The boss {display_name} has left!"      # Alternate message for special users
-      move_alt: "The boss {display_name} switched channels!" # Alternate message for special users
+      join: "Welcome {display_name}"
+      leave: "Goodbye {display_name}"
+      move: "Moved channels {display_name}"
+      join_alt: "The boss {display_name} has arrived!"
+      leave_alt: "The boss {display_name} has left!"
+      move_alt: "The boss {display_name} switched channels!"
 ```
 
 ### Special User Messages
 
-You can configure special messages for specific users (e.g., server owners, VIPs):
+You can configure special messages for specific users:
 
-1. Add alternate message types (ending with `_alt`) to your `tts-config.yaml`
-2. Set the `SPECIAL_USERS` environment variable with Discord user IDs:
-   ```bash
-   SPECIAL_USERS=123456789012345678,987654321098765432
-   ```
+1. Add alternate message types ending with `_alt` to `tts-config.yaml`.
+2. Set `SPECIAL_USERS` with Discord user IDs:
+
+```bash
+SPECIAL_USERS=123456789012345678,987654321098765432
+```
 
 To get a Discord user ID:
-1. Enable Developer Mode in Discord (User Settings → Advanced → Developer Mode)
-2. Right-click on the user and select "Copy ID"
+
+1. Enable Developer Mode in Discord (User Settings -> Advanced -> Developer Mode).
+2. Right-click the user and select "Copy ID".
 
 ### Environment Variables
 
-- `TTS_PROVIDER`: Set to `coqui` (more providers coming soon)
-- `DISCORD_TOKEN`: Your Discord bot token
-- `LOG_LEVEL`: Logging level (INFO, DEBUG, WARNING, ERROR)
-- `SPECIAL_USERS`: Comma-separated Discord user IDs for alternate messages (optional)
-- `IGNORED_CHANNEL_ID`: Channel ID to ignore when selecting busiest channel (optional)
-
-## Testing the Setup
-
-Run the validation script to check your configuration:
-
-```bash
-python test_tts_config.py
-```
-
-This will verify:
-- Configuration file is valid
-- TTS manager can be created
-- Providers are properly configured
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `DISCORD_TOKEN` | Your Discord bot token | Required |
+| `LOG_LEVEL` | Logging level (`INFO`, `DEBUG`, `WARNING`, `ERROR`) | `INFO` |
+| `SPECIAL_USERS` | Comma-separated Discord user IDs for alternate messages | Optional |
+| `IGNORED_USERS` | Comma-separated Discord user IDs to never announce | Optional |
+| `IGNORED_CHANNEL_ID` | Voice channel ID to ignore when selecting busiest channel | Optional |
+| `SALUTE_COOLDOWN_SECONDS` | Override the TTS salute cooldown | `tts-config.yaml` |
+| `TTS_CACHE_MAX_SIZE_MB` | Override the generated audio cache size | `tts-config.yaml` |
 
 ## Troubleshooting
 
 ### Common Issues
 
-1. **"TTS not available"**: Install TTS package with `pip install TTS`
-2. **"FFmpeg not found"**: Install FFmpeg for audio conversion
-3. **"Config file not found"**: Ensure `tts-config.yaml` is in the root directory
-4. **Import errors during development**: Normal if packages aren't installed in your IDE environment
+1. **"edge-tts not available"**: Install dependencies with `pip install -r requirements.txt`.
+2. **"FFmpeg error playing audio"**: Install FFmpeg for Discord audio playback.
+3. **"Config file not found"**: Ensure `tts-config.yaml` is in the repository root when running locally or mounted in Docker.
+4. **No voice announcements**: Confirm `providers.edge.enabled` is `true` and the bot has Connect/Speak permissions.
 
 ### Logs
 
 Check the logs directory for detailed error information:
+
 - `logs/bellboy_YYYYMMDD.log`
 
 ### Discord Permissions
 
 Ensure your bot has these permissions:
+
 - Connect to voice channels
 - Speak in voice channels
 - View channels
 - Read message history
-
-## Future Providers
-
-The system is designed to support additional TTS providers. Planned additions:
-
-- ElevenLabs API
-- Azure Cognitive Services
-- Google Cloud Text-to-Speech
-- Amazon Polly
-
-Each provider will have its own configuration section in `tts-config.yaml` and can be switched via the `TTS_PROVIDER` environment variable.

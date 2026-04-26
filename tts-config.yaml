@@ -1,38 +1,5 @@
-# TTS Provider Configuration
+# Edge TTS configuration
 providers:
-  coqui:
-    name: "Coqui TTS"
-    enabled: true
-    # Fast model for quick initialization (smaller download)
-    model: "tts_models/pt/cv/vits"
-    # Alternative models:
-    # "tts_models/en/ljspeech/fast_pitch" - higher quality but larger download
-    # "tts_models/en/ljspeech/tacotron2-DDC" - faster, smaller download
-    language: "pt-BR"
-    settings:
-      progress_bar: false
-      output_format: "mp3"
-      audio_quality: "128k"
-      volume: "1.1"
-    messages:
-      join:
-        - "Oobaaaa, {display_name} entrou!"
-        - "Eita, {display_name} apareceu!"
-        - "Olha quem chegou, {display_name}!"
-      leave:
-        - "Que pena, {display_name} saiu"
-        - "Tchau {display_name}, até mais!"
-        - "Até logo, {display_name}"
-      move:
-        - "O tal do {display_name} trocou de canal"
-        - "{display_name} foi pra outro canal"
-      join_alt:
-        - "Que pena, {display_name} entrou"
-      leave_alt:
-        - "Oobaaaa, {display_name} saiu!"
-      move_alt:
-        - "O tal do {display_name} trocou de canal"
-
   edge:
     name: "Edge TTS"
     enabled: true
@@ -45,49 +12,15 @@ providers:
         - "Olha o {display_name} chegando!"
       leave:
         - "Deus te acompanhe, {display_name}"
-        - "Falou {display_name}, até mais"
+        - "Falou {display_name}, ate mais"
       move:
         - "O tal do {display_name} trocou de canal"
       join_alt:
         - "Que pena, {display_name} entrou"
       leave_alt:
-        - Obaaaa, {display_name} saiu!"
+        - "Obaaaa, {display_name} saiu!"
       move_alt:
         - "O tal do {display_name} trocou de canal"
-
-  # Placeholder for future providers
-  # elevenlabs:
-  #   name: "ElevenLabs"
-  #   enabled: false
-  #   api_key: ""
-  #   model: "eleven_monolingual_v1"
-  #   voice: "Rachel"
-  #   settings:
-  #     stability: 0.75
-  #     similarity_boost: 0.75
-  #     output_format: "mp3"
-  #   messages:
-  #     join: "Welcome {display_name}"
-  #     leave: "Goodbye {display_name}"
-  #     move: "moved channels {display_name}"
-
-  # azure:
-  #   name: "Azure Cognitive Services"
-  #   enabled: false
-  #   subscription_key: ""
-  #   region: "eastus"
-  #   voice: "en-US-JennyNeural"
-  #   settings:
-  #     speech_rate: "0%"
-  #     speech_pitch: "0%"
-  #     output_format: "mp3"
-  #   messages:
-  #     join: "Welcome {display_name}"
-  #     leave: "Goodbye {display_name}"
-  #     move: "moved channels {display_name}"
-
-# Default provider (fallback if TTS_PROVIDER env var is not set)
-default_provider: "coqui"
 
 # Cooldown in seconds between salutes per user (prevents spam joining/leaving)
 # Can be overridden with SALUTE_COOLDOWN_SECONDS env var

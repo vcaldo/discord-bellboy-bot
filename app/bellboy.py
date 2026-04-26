@@ -37,7 +37,7 @@ if NEW_RELIC_LICENSE_KEY:
 else:
     print("New Relic license key not found - monitoring disabled")
 
-# Try to import TTS, but make it optional
+# Try to import Edge TTS, but make it optional
 try:
     from tts import TTSManager
     TTS_AVAILABLE = True
@@ -48,7 +48,6 @@ except ImportError:
 # Configuration
 DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
 LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO').upper()
-TTS_PROVIDER = os.getenv('TTS_PROVIDER', 'coqui')  # Default to coqui
 IGNORED_CHANNEL_ID = os.getenv('IGNORED_CHANNEL_ID')  # Channel ID to ignore when selecting busiest channel
 IGNORED_USERS = os.getenv('IGNORED_USERS', '')  # Comma-separated user IDs to never announce
 
@@ -90,7 +89,7 @@ class BellboyBot(discord.Client):
         self._setup_logging()
         self.logger = logging.getLogger('bellboy')
 
-        # Initialize Coqui TTS
+        # Initialize Edge TTS
         self._init_tts()
 
         # Per-user cooldown tracking: member_id -> last salute timestamp
@@ -124,7 +123,7 @@ class BellboyBot(discord.Client):
                 'bot_user_name': str(self.user) if self.user else '',
                 'gateway_latency_ms': round(self.latency * 1000.0, 2) if self._bot_ready else 0.0,
                 'guild_count': len(self.guilds) if self._bot_ready else 0,
-                'tts_provider': TTS_PROVIDER,
+                'tts_provider': 'edge',
                 'tts_available': bool(self.tts_manager and getattr(self.tts_manager, 'is_available', False)),
                 'total_voice_joins': self._total_voice_joins,
                 'total_voice_leaves': self._total_voice_leaves,
@@ -273,14 +272,13 @@ class BellboyBot(discord.Client):
         # Check if TTS is available
         if not TTS_AVAILABLE:
             self.logger.warning("TTS module not available - TTS functionality will be disabled")
-            self.logger.info("Install TTS dependencies with: pip install TTS PyYAML")
+            self.logger.info("Install TTS dependencies with: pip install edge-tts PyYAML")
             self.tts_manager = None
             return
 
         try:
-            # Initialize TTS manager with configured provider
-            self.logger.info(f"Initializing TTS Manager with provider: {TTS_PROVIDER}")
-            self.tts_manager = TTSManager(provider_name=TTS_PROVIDER)
+            self.logger.info("Initializing TTS Manager with Edge TTS")
+            self.tts_manager = TTSManager()
 
             # Initialize asynchronously - we'll do this in the ready event
             self.logger.info("TTS Manager created, will initialize on bot ready")
@@ -612,7 +610,7 @@ class BellboyBot(discord.Client):
                 )
 
                 if tts_success:
-                    self.logger.info(f"TTS Manager initialized successfully with provider: {TTS_PROVIDER}")
+                    self.logger.info("TTS Manager initialized successfully with Edge TTS")
 
                     # Log cache statistics
                     if self.tts_manager.cache_manager:
