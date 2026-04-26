@@ -81,6 +81,10 @@ providers:
 | `TTS_CACHE_MAX_SIZE_MB` | Override generated audio cache size | `tts-config.yaml` |
 | `NEW_RELIC_LICENSE_KEY` | New Relic monitoring (optional) | Disabled |
 
+## Metrics
+
+The bot writes health and runtime metrics to `/tmp/bellboy_health.json`. TTS cache metrics are exposed under `tts_cache` and are also published to New Relic as `Custom/TTS/Cache/*` metrics when New Relic is enabled.
+
 ## Discord Bot Setup
 
 1. Go to [Discord Developer Portal](https://discord.com/developers/applications)

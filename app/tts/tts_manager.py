@@ -89,6 +89,11 @@ class TTSCacheManager:
         self.config = cache_config
         self.cache = {}  # filepath -> timestamp
         self.logger = logging.getLogger('bellboy.tts.cache')
+        self.cache_hits = 0
+        self.cache_misses = 0
+        self.cache_invalidations = 0
+        self.cache_evictions = 0
+        self.cache_files_added = 0
 
         cache_dir = self.config.get('directory', '/app/assets')
         os.makedirs(cache_dir, exist_ok=True)
@@ -111,18 +116,35 @@ class TTSCacheManager:
             return
 
         self.cache[file_path] = time.time()
+        self.cache_files_added += 1
         self.logger.debug(f"Added file to cache: {os.path.basename(file_path)} (total cached: {len(self.cache)})")
         self._cleanup_if_needed()
+
+    def record_hit(self) -> None:
+        """Record that a cached TTS file was reused."""
+        if self.config.get('enabled', True):
+            self.cache_hits += 1
+
+    def record_miss(self) -> None:
+        """Record that TTS audio had to be regenerated."""
+        if self.config.get('enabled', True):
+            self.cache_misses += 1
 
     def invalidate_file(self, file_path: str) -> bool:
         """Remove a file from cache and filesystem."""
         try:
+            invalidated = False
             if os.path.exists(file_path):
                 os.remove(file_path)
+                invalidated = True
                 self.logger.debug(f"Invalidated cache file: {os.path.basename(file_path)}")
 
             if file_path in self.cache:
                 del self.cache[file_path]
+                invalidated = True
+
+            if invalidated:
+                self.cache_invalidations += 1
 
             return True
         except OSError as e:
@@ -162,6 +184,7 @@ class TTSCacheManager:
                 if os.path.exists(file_path):
                     os.remove(file_path)
                 del self.cache[file_path]
+                self.cache_evictions += 1
                 total_size -= file_size
                 self.logger.debug(f"Removed old cache file: {os.path.basename(file_path)}")
             except OSError as e:
@@ -204,6 +227,7 @@ class TTSCacheManager:
         max_size_mb = round(self.max_size_bytes / (1024 * 1024), 0)
         total_size = self._get_total_size()
         total_size_mb = round(total_size / (1024 * 1024), 2)
+        cache_requests = self.cache_hits + self.cache_misses
 
         return {
             'enabled': self.config.get('enabled', True),
@@ -211,7 +235,14 @@ class TTSCacheManager:
             'max_size_mb': max_size_mb,
             'current_files': len(self.cache),
             'total_size_mb': total_size_mb,
+            'total_size_bytes': total_size,
             'usage_percent': round((total_size / self.max_size_bytes) * 100, 1) if self.max_size_bytes > 0 else 0,
+            'hits': self.cache_hits,
+            'misses': self.cache_misses,
+            'hit_rate_percent': round((self.cache_hits / cache_requests) * 100, 1) if cache_requests > 0 else 0,
+            'invalidations': self.cache_invalidations,
+            'evictions': self.cache_evictions,
+            'files_added': self.cache_files_added,
         }
 
 
@@ -317,11 +348,15 @@ class TTSManager:
         try:
             if os.path.exists(output_path):
                 if self.validate_cache_file(text, output_path):
+                    self.cache_manager.record_hit()
                     self.logger.info(f"Using cached TTS file: {os.path.basename(output_path)} for text: '{text[:50]}{'...' if len(text) > 50 else ''}'")
                     return True
 
+                self.cache_manager.record_miss()
                 self.logger.info("Cache file invalid for text, regenerating...")
                 self.cache_manager.invalidate_file(output_path)
+            else:
+                self.cache_manager.record_miss()
 
             self.logger.info(f"Generating new TTS audio for text: '{text[:50]}{'...' if len(text) > 50 else ''}'")
             success = await self.provider.synthesize(text, output_path, **kwargs)

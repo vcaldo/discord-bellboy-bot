@@ -82,6 +82,42 @@ Generated MP3 files are cached to improve performance:
 - Oldest cached files are removed automatically when the size limit is exceeded
 - `TTS_CACHE_MAX_SIZE_MB` can override the configured cache size
 
+### Cache Metrics
+
+Cache stats are exposed in `/tmp/bellboy_health.json` under the `tts_cache` key for local collectors:
+
+| Field | Description |
+|-------|-------------|
+| `enabled` | Whether TTS caching is enabled |
+| `directory` | Cache directory path |
+| `current_files` | Number of tracked cached MP3 files |
+| `total_size_bytes` | Total tracked cache size in bytes |
+| `total_size_mb` | Total tracked cache size in MB |
+| `max_size_mb` | Configured cache size limit in MB |
+| `usage_percent` | Percent of the configured cache limit currently used |
+| `hits` | Cached files reused since process start |
+| `misses` | Cache misses since process start |
+| `hit_rate_percent` | Cache hit percentage since process start |
+| `invalidations` | Invalid cache files removed since process start |
+| `evictions` | Old cache files removed by size cleanup since process start |
+| `files_added` | Generated files added to cache since process start |
+
+When New Relic is enabled, the health loop also publishes these custom metrics every `HEALTH_CHECK_INTERVAL` seconds. Size, usage, and hit-rate metrics are gauges; count metrics are deltas since the previous publish.
+
+| Metric | Source field |
+|--------|--------------|
+| `Custom/TTS/Cache/Enabled` | `enabled` |
+| `Custom/TTS/Cache/CurrentFiles` | `current_files` |
+| `Custom/TTS/Cache/TotalSizeMB` | `total_size_mb` |
+| `Custom/TTS/Cache/MaxSizeMB` | `max_size_mb` |
+| `Custom/TTS/Cache/UsagePercent` | `usage_percent` |
+| `Custom/TTS/Cache/Hits` | `hits` |
+| `Custom/TTS/Cache/Misses` | `misses` |
+| `Custom/TTS/Cache/HitRatePercent` | `hit_rate_percent` |
+| `Custom/TTS/Cache/Invalidations` | `invalidations` |
+| `Custom/TTS/Cache/Evictions` | `evictions` |
+| `Custom/TTS/Cache/FilesAdded` | `files_added` |
+
 ## Troubleshooting
 
 ### TTS Not Working
