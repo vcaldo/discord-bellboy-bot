@@ -2,6 +2,7 @@ import asyncio
 import discord
 import json
 import logging
+import math
 import os
 import subprocess
 import tempfile
@@ -59,6 +60,7 @@ LOG_MESSAGE_FORMAT = '%(asctime)s | %(levelname)s | %(message)s'
 # Health check configuration
 HEALTH_FILE = '/tmp/bellboy_health.json'
 HEALTH_CHECK_INTERVAL = 15  # seconds between health writes
+HEALTH_RUNTIME_ERROR_WINDOW_SECONDS = 300  # recent runtime errors keep health red briefly
 VOICE_STALE_THRESHOLD = 120  # seconds before considering voice connection stale
 
 # FFmpeg options for audio playback
@@ -98,6 +100,14 @@ class BellboyBot(discord.Client):
         # Health tracking
         self._last_voice_activity: float = 0.0  # timestamp of last successful voice operation
         self._bot_ready: bool = False
+        self._gateway_connected: bool = False
+        self._last_gateway_disconnect_at: float = 0.0
+        self._last_gateway_resume_at: float = 0.0
+        self._last_runtime_error_at: float = 0.0
+        self._last_runtime_error_source: str = ''
+        self._last_runtime_error_message: str = ''
+        self._total_runtime_errors: int = 0
+        self._health_task = None
         self._voice_disconnected_at: Dict[int, float] = {}  # guild_id -> timestamp of first disconnect
         self._start_time: float = time.time()  # process start, for uptime
         self._total_voice_joins: int = 0  # cumulative voice channel joins/moves
@@ -112,18 +122,88 @@ class BellboyBot(discord.Client):
         if NEW_RELIC_LICENSE_KEY:
             self._test_newrelic_transaction()
 
+    def _record_runtime_error(self, source: str, error: Exception | str) -> None:
+        """Track runtime errors so health output exposes recent failures."""
+        self._last_runtime_error_at = time.time()
+        self._last_runtime_error_source = source
+        self._last_runtime_error_message = str(error)
+        self._total_runtime_errors += 1
+
+    def _is_gateway_healthy(self) -> bool:
+        """Return True only when Discord's gateway connection is currently usable."""
+        if not self._bot_ready or not self._gateway_connected or self.is_closed() or not self.is_ready():
+            return False
+
+        latency = self.latency
+        if not isinstance(latency, (int, float)) or not math.isfinite(latency):
+            return False
+
+        gateway = getattr(self, 'ws', None)
+        if gateway is None:
+            return False
+        if getattr(gateway, 'closed', False):
+            return False
+        if getattr(gateway, 'open', True) is False:
+            return False
+
+        return True
+
+    def _get_unhealthy_reasons(self, now: Optional[float] = None) -> list[str]:
+        """Collect reasons that should make Docker report the container unhealthy."""
+        if now is None:
+            now = time.time()
+
+        reasons = []
+        latency = self.latency
+
+        if not self._bot_ready:
+            reasons.append('bot_not_ready')
+        if not self._gateway_connected:
+            reasons.append('gateway_disconnected')
+        if self.is_closed():
+            reasons.append('client_closed')
+        if not self.is_ready():
+            reasons.append('client_not_ready')
+        if not isinstance(latency, (int, float)) or not math.isfinite(latency):
+            reasons.append('gateway_latency_unavailable')
+        gateway = getattr(self, 'ws', None)
+        if gateway is None:
+            reasons.append('gateway_websocket_missing')
+        else:
+            if getattr(gateway, 'closed', False):
+                reasons.append('gateway_websocket_closed')
+            if getattr(gateway, 'open', True) is False:
+                reasons.append('gateway_websocket_not_open')
+        if (
+            self._last_runtime_error_at > 0
+            and now - self._last_runtime_error_at <= HEALTH_RUNTIME_ERROR_WINDOW_SECONDS
+        ):
+            source = self._last_runtime_error_source or 'unknown'
+            reasons.append(f'recent_runtime_error:{source}')
+
+        return reasons
+
     def _write_health(self) -> None:
         """Write current health status to a file for Docker healthcheck and metric collectors."""
         try:
             cache_stats = self._get_tts_cache_stats()
+            now = time.time()
+            unhealthy_reasons = self._get_unhealthy_reasons(now)
             health = {
-                'timestamp': time.time(),
+                'timestamp': now,
                 'start_time': self._start_time,
-                'uptime_sec': max(0.0, time.time() - self._start_time),
+                'uptime_sec': max(0.0, now - self._start_time),
+                'healthy': not unhealthy_reasons,
+                'health_status': 'healthy' if not unhealthy_reasons else 'unhealthy',
+                'unhealthy_reasons': unhealthy_reasons,
                 'bot_ready': self._bot_ready,
+                'discord_connected': self._is_gateway_healthy(),
+                'gateway_connected': self._gateway_connected,
+                'last_gateway_disconnect_at': self._last_gateway_disconnect_at,
+                'last_gateway_resume_at': self._last_gateway_resume_at,
                 'bot_user_id': str(self.user.id) if self.user else '',
                 'bot_user_name': str(self.user) if self.user else '',
-                'gateway_latency_ms': round(self.latency * 1000.0, 2) if self._bot_ready else 0.0,
+                'gateway_latency_ms': round(self.latency * 1000.0, 2) if isinstance(self.latency, (int, float)) and math.isfinite(self.latency) else None,
                 'guild_count': len(self.guilds) if self._bot_ready else 0,
                 'tts_provider': 'edge',
                 'tts_available': bool(self.tts_manager and getattr(self.tts_manager, 'is_available', False)),
@@ -131,6 +211,11 @@ class BellboyBot(discord.Client):
                 'total_voice_leaves': self._total_voice_leaves,
                 'total_tts_plays': self._total_tts_plays,
                 'total_tts_errors': self._total_tts_errors,
+                'total_runtime_errors': self._total_runtime_errors,
+                'runtime_error_window_sec': HEALTH_RUNTIME_ERROR_WINDOW_SECONDS,
+                'last_runtime_error_at': self._last_runtime_error_at,
+                'last_runtime_error_source': self._last_runtime_error_source,
+                'last_runtime_error_message': self._last_runtime_error_message,
                 'last_join_at': self._last_join_at,
                 'last_join_channel': self._last_join_channel,
                 'tts_cache': cache_stats,
@@ -225,6 +310,7 @@ class BellboyBot(discord.Client):
                 self._record_tts_cache_metrics(self._get_tts_cache_stats())
                 await self._check_stale_voice()
             except Exception as e:
+                self._record_runtime_error('health_loop', e)
                 self.logger.error(f"Error in health loop: {e}")
             await asyncio.sleep(HEALTH_CHECK_INTERVAL)
 
@@ -265,6 +351,7 @@ class BellboyBot(discord.Client):
                         continue
 
             except Exception as e:
+                self._record_runtime_error('voice_state_check', e)
                 self.logger.error(f"[{self._safe_guild_name(guild)}] Error checking voice state: {e}")
 
     async def _force_voice_reconnect(self, guild: discord.Guild) -> None:
@@ -295,6 +382,7 @@ class BellboyBot(discord.Client):
                 self.logger.info(f"[{safe_name}] No active voice channel to rejoin after reconnect")
 
         except Exception as e:
+            self._record_runtime_error('voice_reconnect', e)
             self.logger.error(f"[{safe_name}] Failed to force voice reconnect: {e}")
 
     def _setup_logging(self) -> None:
@@ -442,6 +530,7 @@ class BellboyBot(discord.Client):
                 self.logger.error(f"[{safe_guild_name}] Failed to create TTS for message type: {message_type}")
 
         except Exception as e:
+            self._record_runtime_error('create_and_play_tts', e)
             safe_guild_name = self._safe_guild_name(guild)
             self.logger.error(f"[{safe_guild_name}] Error in create_and_play_tts: {e}")
 
@@ -475,6 +564,7 @@ class BellboyBot(discord.Client):
                 self.logger.error(f"[{safe_guild_name}] Failed to create TTS for text: {text}")
 
         except Exception as e:
+            self._record_runtime_error('create_tts_from_text', e)
             safe_guild_name = self._safe_guild_name(guild)
             self.logger.error(f"[{safe_guild_name}] Error in create_tts_from_text: {e}")
 
@@ -556,12 +646,14 @@ class BellboyBot(discord.Client):
             except discord.errors.ClientException as e:
                 newrelic.agent.record_custom_metric('Custom/Audio/DiscordClientError', 1)
                 newrelic.agent.notice_error()
+                self._record_runtime_error('audio_playback', e)
                 self._total_tts_errors += 1
                 safe_guild_name = self._safe_guild_name(guild)
                 self.logger.error(f"[{safe_guild_name}] Discord client error playing audio: {e}")
             except Exception as e:
                 newrelic.agent.record_custom_metric('Custom/Audio/FFmpegError', 1)
                 newrelic.agent.notice_error()
+                self._record_runtime_error('audio_playback', e)
                 self._total_tts_errors += 1
                 safe_guild_name = self._safe_guild_name(guild)
                 self.logger.error(f"[{safe_guild_name}] FFmpeg error playing audio: {e}")
@@ -569,6 +661,7 @@ class BellboyBot(discord.Client):
         except Exception as e:
             newrelic.agent.record_custom_metric('Custom/Audio/GeneralError', 1)
             newrelic.agent.notice_error()
+            self._record_runtime_error('audio_playback', e)
             safe_guild_name = self._safe_guild_name(guild)
             self.logger.error(f"[{safe_guild_name}] Error playing notification audio: {e}")
 
@@ -602,9 +695,11 @@ class BellboyBot(discord.Client):
                 self.logger.info(f"[{safe_guild_name}] Bot moved to busier channel: {busiest_channel.name} ({max_members} members)")
 
         except discord.ClientException as e:
+            self._record_runtime_error('voice_join', e)
             safe_guild_name = self._safe_guild_name(guild)
             self.logger.error(f"[{safe_guild_name}] Discord client error joining voice channel: {e}")
         except Exception as e:
+            self._record_runtime_error('voice_join', e)
             safe_guild_name = self._safe_guild_name(guild)
             self.logger.error(f"[{safe_guild_name}] Unexpected error joining voice channel: {e}")
 
@@ -635,6 +730,7 @@ class BellboyBot(discord.Client):
                 self.logger.debug(f"[{safe_guild_name}] Staying in {current_channel.name} with {human_count} human members")
 
         except Exception as e:
+            self._record_runtime_error('voice_leave', e)
             safe_guild_name = self._safe_guild_name(guild)
             self.logger.error(f"[{safe_guild_name}] Error checking if should leave empty channel: {e}")
 
@@ -650,6 +746,9 @@ class BellboyBot(discord.Client):
     @newrelic.agent.background_task(name='Discord.on_ready')
     async def on_ready(self):
         """Called when the bot is ready."""
+        self._bot_ready = True
+        self._gateway_connected = True
+        self._last_gateway_resume_at = time.time()
         self.logger.info(f'Bot logged in as {self.user} (ID: {self.user.id})')
 
         # Initialize TTS manager asynchronously with timeout
@@ -691,7 +790,8 @@ class BellboyBot(discord.Client):
         self.logger.info('Monitoring voice channel activity...')
 
         # Start the health check / voice watchdog loop
-        self.loop.create_task(self._health_loop())
+        if self._health_task is None or self._health_task.done():
+            self._health_task = self.loop.create_task(self._health_loop())
 
         # Check if bot should join any channels on startup
         await self._check_initial_voice_channels()
@@ -728,13 +828,31 @@ class BellboyBot(discord.Client):
                         self.logger.debug(f"[{safe_guild_name}] No active voice channels found on startup")
 
                 except Exception as e:
+                    self._record_runtime_error('startup_voice_check', e)
                     safe_guild_name = self._safe_guild_name(guild)
                     self.logger.error(f"[{safe_guild_name}] Error checking voice channels on startup: {e}")
                     newrelic.agent.notice_error()
 
         except Exception as e:
+            self._record_runtime_error('startup_voice_check', e)
             self.logger.error(f"Error during startup voice channel check: {e}")
             newrelic.agent.notice_error()
+
+    @newrelic.agent.background_task(name='Discord.on_disconnect')
+    async def on_disconnect(self):
+        """Called when the Discord gateway connection is lost."""
+        self._bot_ready = False
+        self._gateway_connected = False
+        self._last_gateway_disconnect_at = time.time()
+        self.logger.warning("Discord gateway disconnected; healthcheck will remain unhealthy until reconnected")
+
+    @newrelic.agent.background_task(name='Discord.on_resumed')
+    async def on_resumed(self):
+        """Called when the Discord gateway session resumes after a disconnect."""
+        self._bot_ready = True
+        self._gateway_connected = True
+        self._last_gateway_resume_at = time.time()
+        self.logger.info("Discord gateway session resumed")
 
     @newrelic.agent.background_task(name='Discord.on_voice_state_update')
     async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
@@ -817,6 +935,7 @@ class BellboyBot(discord.Client):
         except Exception as e:
             newrelic.agent.record_custom_metric('Custom/Discord/VoiceStateUpdateErrors', 1)
             newrelic.agent.notice_error()
+            self._record_runtime_error('voice_state_update', e)
             safe_guild_name = self._safe_guild_name(member.guild)
             self.logger.error(f"[{safe_guild_name}] Error in voice state update: {e}")
 
@@ -826,6 +945,7 @@ class BellboyBot(discord.Client):
         # Record error metrics in New Relic
         newrelic.agent.record_custom_metric('Custom/Discord/Errors', 1)
         newrelic.agent.notice_error()
+        self._record_runtime_error(f'discord_event:{event}', 'Unhandled Discord event error')
 
         self.logger.error(f'An error occurred in event {event}', exc_info=True)
 
