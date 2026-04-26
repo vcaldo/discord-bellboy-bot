@@ -1,12 +1,12 @@
 # Discord Bellboy Bot
 
-A Discord bot that monitors voice channel activity and provides intelligent TTS notifications with multi-provider support.
+A Discord bot that monitors voice channel activity and provides intelligent Edge TTS notifications.
 
 ## Features
 
 - **Voice Channel Monitoring**: Automatically joins the busiest voice channel
 - **Smart TTS Notifications**: Announces when users join, leave, or move between channels
-- **Multi-Provider TTS Support**: Configurable TTS providers (currently supports Coqui TTS)
+- **Edge TTS Support**: Uses Microsoft Edge neural voices for announcements
 - **Intelligent Behavior**: Only follows real users, ignores bots and applications
 - **New Relic Integration**: Optional monitoring and performance tracking
 - **Configurable Messages**: Customize TTS announcements via YAML configuration
@@ -33,7 +33,6 @@ cp .env.example .env
 
 # Edit .env with your Discord token
 DISCORD_TOKEN=your_discord_bot_token_here
-TTS_PROVIDER=coqui
 ```
 
 ### 3. Run the Bot
@@ -50,38 +49,41 @@ docker-compose up --build
 
 ## TTS Configuration
 
-The bot uses a flexible TTS system configured via `tts-config.yaml`:
+The bot uses Edge TTS configured via `tts-config.yaml`:
 
 ```yaml
 providers:
-  coqui:
-    name: "Coqui TTS"
+  edge:
+    name: "Edge TTS"
     enabled: true
-    model: "tts_models/en/ljspeech/fast_pitch"
+    voice: "pt-PT-DuarteNeural"
     messages:
       join: "Bem vindo {display_name}"
       leave: "tchau tchau {display_name}"
       move: "trocou de canal {display_name}"
-
-default_provider: "coqui"
 ```
 
-### Supported Providers
+### Supported TTS
 
-- **Coqui TTS**: Open-source TTS with multiple model support
-- *More providers coming soon*: ElevenLabs, Azure, Google Cloud, Amazon Polly
+- **Edge TTS**: Microsoft Edge neural voices via `edge-tts`
+- Edge TTS is the only supported speech engine.
 
 ## Environment Variables
 
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `DISCORD_TOKEN` | Your Discord bot token | Required |
-| `TTS_PROVIDER` | TTS provider to use | `coqui` |
 | `LOG_LEVEL` | Logging level | `INFO` |
 | `IGNORED_CHANNEL_ID` | Voice channel ID to skip when finding the busiest channel | Optional |
 | `IGNORED_USERS` | Comma-separated Discord user IDs to never announce | Optional |
 | `SPECIAL_USERS` | Comma-separated Discord user IDs for alternate messages | Optional |
+| `SALUTE_COOLDOWN_SECONDS` | Override the TTS salute cooldown | `tts-config.yaml` |
+| `TTS_CACHE_MAX_SIZE_MB` | Override generated audio cache size | `tts-config.yaml` |
 | `NEW_RELIC_LICENSE_KEY` | New Relic monitoring (optional) | Disabled |
+
+## Metrics
+
+The bot writes health and runtime metrics to `/tmp/bellboy_health.json`. TTS cache metrics are exposed under `tts_cache` and are also published to New Relic as `Custom/TTS/Cache/*` metrics when New Relic is enabled.
 
 ## Discord Bot Setup
 
@@ -97,7 +99,7 @@ default_provider: "coqui"
 ## Documentation
 
 - [Setup Guide](SETUP_GUIDE.md) - Detailed installation and configuration
-- [TTS Configuration](TTS_CONFIGURATION.md) - TTS provider configuration guide
+- [TTS Configuration](TTS_CONFIGURATION.md) - Edge TTS configuration guide
 - [TTS Troubleshooting](TTS_TROUBLESHOOTING.md) - Common issues and solutions
 - [New Relic Setup](NEW_RELIC_SETUP.md) - Monitoring configuration
 
@@ -118,19 +120,9 @@ discord-bellboy-bot/
 └── Dockerfile             # Container definition
 ```
 
-### Adding New TTS Providers
-
-1. Create a new provider class in `app/tts/tts_manager.py`
-2. Inherit from `TTSProvider` and implement required methods
-3. Add provider to the registry in `TTSManager`
-4. Update `tts-config.yaml` with provider configuration
-
 ### Testing
 
 ```bash
-# Validate TTS configuration
-python test_tts_config.py
-
 # Run with debug logging
 LOG_LEVEL=DEBUG python app/bellboy.py
 ```

@@ -1,25 +1,14 @@
 """
-TTS Manager module for handling multiple TTS providers.
+Edge TTS manager for Discord Bellboy Bot.
 """
-import os
-import yaml
-import logging
-import tempfile
-import subprocess
 import hashlib
-import random
+import logging
+import os
 import time
-from abc import ABC, abstractmethod
-from typing import Optional, Dict, Any
 from pathlib import Path
+from typing import Any, Dict, Optional
 
-# Import TTS libraries with fallback
-try:
-    from TTS.api import TTS
-    COQUI_AVAILABLE = True
-except ImportError:
-    COQUI_AVAILABLE = False
-    TTS = None
+import yaml
 
 try:
     import edge_tts
@@ -29,218 +18,23 @@ except ImportError:
     edge_tts = None
 
 
-class TTSProvider(ABC):
-    """Abstract base class for TTS providers."""
+class EdgeTTSProvider:
+    """Edge TTS provider implementation using Microsoft neural voices."""
+
+    provider_name = "edge"
 
     def __init__(self, config: Dict[str, Any], cache_manager: 'TTSCacheManager'):
         self.config = config
         self.cache_manager = cache_manager
-        self.logger = logging.getLogger(f'bellboy.tts.{self.provider_name}')
+        self.logger = logging.getLogger('bellboy.tts.edge')
         self.is_initialized = False
-
-    @property
-    @abstractmethod
-    def provider_name(self) -> str:
-        """Return the provider name."""
-        pass
-
-    @abstractmethod
-    async def initialize(self) -> bool:
-        """Initialize the TTS provider. Return True if successful."""
-        pass
-
-    @abstractmethod
-    async def synthesize(self, text: str, output_path: str, **kwargs) -> bool:
-        """Synthesize text to audio file. Return True if successful."""
-        pass
-
-    def get_message(self, message_type: str, **kwargs) -> str:
-        """Get a formatted message for the given type, picked randomly from the list."""
-        messages = self.config.get('messages', {})
-
-        # Check if this is a special user
-        member_id = kwargs.get('member_id')
-        if member_id and self._is_special_user(str(member_id)):
-            # Try to get alternate message first
-            alt_message_type = f"{message_type}_alt"
-            if alt_message_type in messages:
-                template = messages[alt_message_type]
-            else:
-                # Fallback to regular message if no alternate exists
-                template = messages.get(message_type, f"{message_type} {{display_name}}")
-        else:
-            # Use regular message for normal users
-            template = messages.get(message_type, f"{message_type} {{display_name}}")
-
-        # Support list of messages — pick one
-        if isinstance(template, list):
-            template = template[int(time.time() * 1000) % len(template)]
-
-        return template.format(**kwargs)
-
-    def _is_special_user(self, user_id: str) -> bool:
-        """Check if a user ID is in the special users list."""
-        import os
-        special_users = os.getenv('SPECIAL_USERS', '')
-        if not special_users.strip():
-            return False
-
-        # Parse comma-separated user IDs
-        special_user_ids = [uid.strip() for uid in special_users.split(',') if uid.strip()]
-        return user_id in special_user_ids
-
-
-class CoquiTTSProvider(TTSProvider):
-    """Coqui TTS provider implementation."""
-
-    @property
-    def provider_name(self) -> str:
-        return "coqui"
-
-    def __init__(self, config: Dict[str, Any], cache_manager: 'TTSCacheManager'):
-        super().__init__(config, cache_manager)
-        self.tts = None
-
-    async def initialize(self) -> bool:
-        """Initialize Coqui TTS."""
-        if not COQUI_AVAILABLE:
-            self.logger.warning("Coqui TTS not available - install with: pip install TTS")
-            return False
-
-        try:
-            import asyncio
-
-            model = self.config.get('model', 'tts_models/en/ljspeech/tacotron2-DDC')
-            settings = self.config.get('settings', {})
-            progress_bar = settings.get('progress_bar', False)
-
-            self.logger.info(f"Initializing Coqui TTS with model: {model}")
-            self.logger.info("This may take a few minutes on first run (downloading model)...")
-
-            def init_tts():
-                """Initialize TTS in a separate thread."""
-                try:
-                    return TTS(model_name=model, progress_bar=progress_bar)
-                except Exception as e:
-                    self.logger.error(f"TTS initialization failed: {e}")
-                    if "github" in str(e).lower() or "download" in str(e).lower():
-                        self.logger.error("Model download failed. This could be due to:")
-                        self.logger.error("- Network connectivity issues")
-                        self.logger.error("- GitHub rate limiting")
-                        self.logger.error("- Invalid model name")
-                        self.logger.error("Try again later or use a different model.")
-                    raise
-
-            # Run TTS initialization in a thread to avoid blocking the event loop
-            loop = asyncio.get_event_loop()
-            self.tts = await loop.run_in_executor(None, init_tts)
-
-            self.is_initialized = True
-            self.logger.info("Coqui TTS initialized successfully")
-            return True
-
-        except Exception as e:
-            self.logger.error(f"Failed to initialize Coqui TTS: {e}")
-            self.logger.error("TTS will be disabled. Bot will continue without voice announcements.")
-            return False
-
-    async def synthesize(self, text: str, output_path: str, **kwargs) -> bool:
-        """Synthesize text using Coqui TTS."""
-        if not self.is_initialized or self.tts is None:
-            self.logger.error("Coqui TTS not initialized")
-            return False
-
-        try:
-            import asyncio
-
-            # Ensure output directory exists
-            os.makedirs(os.path.dirname(output_path), exist_ok=True)
-
-            # Create temporary WAV file
-            with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_wav:
-                temp_wav_path = temp_wav.name
-
-            # Log synthesis start
-            self.logger.debug(f"Starting Coqui TTS synthesis for text length: {len(text)} characters")
-
-            # Generate speech in thread to avoid blocking event loop
-            loop = asyncio.get_event_loop()
-            await loop.run_in_executor(
-                None,
-                lambda: self.tts.tts_to_file(text=text, file_path=temp_wav_path)
-            )
-
-            self.logger.debug(f"Coqui TTS synthesis completed, converting to {output_path.split('.')[-1].upper()}")
-
-            # Convert to MP3 if needed
-            if output_path.endswith('.mp3'):
-                return await self._convert_to_mp3(temp_wav_path, output_path)
-            else:
-                # Just rename/move the WAV file
-                os.rename(temp_wav_path, output_path)
-                self.logger.debug(f"WAV file saved: {os.path.basename(output_path)}")
-                return True
-
-        except Exception as e:
-            self.logger.error(f"Coqui TTS synthesis failed: {e}")
-            return False
-
-    async def _convert_to_mp3(self, wav_path: str, mp3_path: str) -> bool:
-        """Convert WAV to MP3 using ffmpeg."""
-        try:
-            import asyncio
-
-            settings = self.config.get('settings', {})
-            audio_quality = settings.get('audio_quality', '128k')
-
-            ffmpeg_cmd = [
-                'ffmpeg', '-y',  # Overwrite output
-                '-i', wav_path,
-                '-codec:a', 'mp3',
-                '-b:a', audio_quality,
-                mp3_path
-            ]
-
-            # Run ffmpeg in thread to avoid blocking event loop
-            loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(
-                None,
-                lambda: subprocess.run(ffmpeg_cmd, capture_output=True, text=True, timeout=30)
-            )
-
-            # Clean up temporary WAV file
-            try:
-                os.unlink(wav_path)
-            except OSError:
-                pass
-
-            if result.returncode == 0:
-                self.logger.debug(f"Successfully converted to MP3: {mp3_path}")
-                return True
-            else:
-                self.logger.error(f"ffmpeg conversion failed: {result.stderr}")
-                return False
-
-        except subprocess.TimeoutExpired:
-            self.logger.error("ffmpeg conversion timed out")
-            return False
-        except Exception as e:
-            self.logger.error(f"Error converting to MP3: {e}")
-            return False
-
-
-class EdgeTTSProvider(TTSProvider):
-    """Edge TTS provider implementation using Microsoft neural voices."""
-
-    @property
-    def provider_name(self) -> str:
-        return "edge"
 
     async def initialize(self) -> bool:
         """Initialize Edge TTS."""
         if not EDGE_TTS_AVAILABLE:
             self.logger.warning("edge-tts not available - install with: pip install edge-tts")
             return False
+
         self.is_initialized = True
         self.logger.info("Edge TTS initialized successfully")
         return True
@@ -253,7 +47,7 @@ class EdgeTTSProvider(TTSProvider):
 
         try:
             os.makedirs(os.path.dirname(output_path), exist_ok=True)
-            voice = self.config.get('voice', 'pt-BR-FranciscaNeural')
+            voice = self.config.get('voice', 'pt-PT-DuarteNeural')
             self.logger.debug(f"Starting Edge TTS synthesis for text length: {len(text)} characters")
             communicate = edge_tts.Communicate(text, voice)
             await communicate.save(output_path)
@@ -263,6 +57,30 @@ class EdgeTTSProvider(TTSProvider):
             self.logger.error(f"Edge TTS synthesis failed: {e}")
             return False
 
+    def get_message(self, message_type: str, **kwargs) -> str:
+        """Get a formatted message for the given type."""
+        messages = self.config.get('messages', {})
+        member_id = kwargs.get('member_id')
+
+        if member_id and self._is_special_user(str(member_id)):
+            template = messages.get(f"{message_type}_alt", messages.get(message_type, f"{message_type} {{display_name}}"))
+        else:
+            template = messages.get(message_type, f"{message_type} {{display_name}}")
+
+        if isinstance(template, list):
+            template = template[int(time.time() * 1000) % len(template)]
+
+        return template.format(**kwargs)
+
+    def _is_special_user(self, user_id: str) -> bool:
+        """Check if a user ID is in the special users list."""
+        special_users = os.getenv('SPECIAL_USERS', '')
+        if not special_users.strip():
+            return False
+
+        special_user_ids = [uid.strip() for uid in special_users.split(',') if uid.strip()]
+        return user_id in special_user_ids
+
 
 class TTSCacheManager:
     """Manages TTS file caching."""
@@ -271,12 +89,15 @@ class TTSCacheManager:
         self.config = cache_config
         self.cache = {}  # filepath -> timestamp
         self.logger = logging.getLogger('bellboy.tts.cache')
+        self.cache_hits = 0
+        self.cache_misses = 0
+        self.cache_invalidations = 0
+        self.cache_evictions = 0
+        self.cache_files_added = 0
 
-        # Ensure cache directory exists
         cache_dir = self.config.get('directory', '/app/assets')
         os.makedirs(cache_dir, exist_ok=True)
 
-        # Determine max cache size: env var > config > default (512MB)
         env_max = os.getenv('TTS_CACHE_MAX_SIZE_MB')
         if env_max is not None:
             max_size_mb = int(env_max)
@@ -287,7 +108,6 @@ class TTSCacheManager:
         enabled = self.config.get('enabled', True)
         self.logger.info(f"TTS Cache initialized: enabled={enabled}, max_size_mb={max_size_mb}, directory={cache_dir}")
 
-        # Load existing cache files if any
         self._scan_existing_cache()
 
     def add_file(self, file_path: str) -> None:
@@ -296,18 +116,35 @@ class TTSCacheManager:
             return
 
         self.cache[file_path] = time.time()
+        self.cache_files_added += 1
         self.logger.debug(f"Added file to cache: {os.path.basename(file_path)} (total cached: {len(self.cache)})")
         self._cleanup_if_needed()
+
+    def record_hit(self) -> None:
+        """Record that a cached TTS file was reused."""
+        if self.config.get('enabled', True):
+            self.cache_hits += 1
+
+    def record_miss(self) -> None:
+        """Record that TTS audio had to be regenerated."""
+        if self.config.get('enabled', True):
+            self.cache_misses += 1
 
     def invalidate_file(self, file_path: str) -> bool:
         """Remove a file from cache and filesystem."""
         try:
+            invalidated = False
             if os.path.exists(file_path):
                 os.remove(file_path)
+                invalidated = True
                 self.logger.debug(f"Invalidated cache file: {os.path.basename(file_path)}")
 
             if file_path in self.cache:
                 del self.cache[file_path]
+                invalidated = True
+
+            if invalidated:
+                self.cache_invalidations += 1
 
             return True
         except OSError as e:
@@ -338,7 +175,6 @@ class TTSCacheManager:
             f"cleaning up oldest files"
         )
 
-        # Sort by timestamp, remove oldest first until under limit
         sorted_cache = sorted(self.cache.items(), key=lambda x: x[1])
         for file_path, _ in sorted_cache:
             if total_size <= self.max_size_bytes:
@@ -348,6 +184,7 @@ class TTSCacheManager:
                 if os.path.exists(file_path):
                     os.remove(file_path)
                 del self.cache[file_path]
+                self.cache_evictions += 1
                 total_size -= file_size
                 self.logger.debug(f"Removed old cache file: {os.path.basename(file_path)}")
             except OSError as e:
@@ -363,19 +200,13 @@ class TTSCacheManager:
         cache_dir = self.config.get('directory', '/app/assets')
         try:
             if os.path.exists(cache_dir):
-                # Look for TTS files (mp3, wav)
                 import glob
-                patterns = ['*.mp3', '*.wav']
-                existing_files = []
 
-                for pattern in patterns:
-                    existing_files.extend(glob.glob(os.path.join(cache_dir, pattern)))
-
-                # Add existing files to cache with current timestamp
+                existing_files = glob.glob(os.path.join(cache_dir, '*.mp3'))
                 current_time = time.time()
+
                 for file_path in existing_files:
                     if os.path.isfile(file_path):
-                        # Use file modification time if available, otherwise current time
                         try:
                             file_time = os.path.getmtime(file_path)
                         except OSError:
@@ -396,6 +227,7 @@ class TTSCacheManager:
         max_size_mb = round(self.max_size_bytes / (1024 * 1024), 0)
         total_size = self._get_total_size()
         total_size_mb = round(total_size / (1024 * 1024), 2)
+        cache_requests = self.cache_hits + self.cache_misses
 
         return {
             'enabled': self.config.get('enabled', True),
@@ -403,27 +235,27 @@ class TTSCacheManager:
             'max_size_mb': max_size_mb,
             'current_files': len(self.cache),
             'total_size_mb': total_size_mb,
+            'total_size_bytes': total_size,
             'usage_percent': round((total_size / self.max_size_bytes) * 100, 1) if self.max_size_bytes > 0 else 0,
+            'hits': self.cache_hits,
+            'misses': self.cache_misses,
+            'hit_rate_percent': round((self.cache_hits / cache_requests) * 100, 1) if cache_requests > 0 else 0,
+            'invalidations': self.cache_invalidations,
+            'evictions': self.cache_evictions,
+            'files_added': self.cache_files_added,
         }
 
 
 class TTSManager:
-    """Main TTS manager that handles multiple providers."""
+    """Main TTS manager for Edge TTS."""
 
-    def __init__(self, config_path: str = "tts-config.yaml", provider_name: Optional[str] = None):
+    provider_name = "edge"
+
+    def __init__(self, config_path: str = "tts-config.yaml"):
         self.logger = logging.getLogger('bellboy.tts')
         self.config = self._load_config(config_path)
         self.cache_manager = TTSCacheManager(self.config.get('cache', {}))
-
-        # Determine provider
-        self.provider_name = provider_name or os.getenv('TTS_PROVIDER') or self.config.get('default_provider', 'coqui')
-        self.provider = None
-
-        # Provider registry
-        self.providers = {
-            'coqui': CoquiTTSProvider,
-            'edge': EdgeTTSProvider,
-        }
+        self.provider: Optional[EdgeTTSProvider] = None
 
     def _load_config(self, config_path: str) -> Dict[str, Any]:
         """Load TTS configuration from YAML file."""
@@ -434,7 +266,7 @@ class TTSManager:
                 return self._get_default_config()
 
             with open(config_file, 'r', encoding='utf-8') as f:
-                config = yaml.safe_load(f)
+                config = yaml.safe_load(f) or {}
                 self.logger.info(f"Loaded TTS config from: {config_path}")
                 return config
 
@@ -446,60 +278,47 @@ class TTSManager:
         """Get default configuration if file loading fails."""
         return {
             'providers': {
-                'coqui': {
-                    'name': 'Coqui TTS',
+                'edge': {
+                    'name': 'Edge TTS',
                     'enabled': True,
-                    'model': 'tts_models/en/ljspeech/tacotron2-DDC',  # Faster model for quick init
+                    'voice': 'pt-PT-DuarteNeural',
                     'settings': {
-                        'progress_bar': False,
                         'output_format': 'mp3',
-                        'audio_quality': '128k'
                     },
                     'messages': {
-                        'join': 'Welcome {display_name}',
-                        'leave': 'Bye bye {display_name}',
-                        'move': 'Moved channels {display_name}'
-                    }
+                        'join': ['Bem vindo {display_name}', 'Olha o {display_name} chegando!'],
+                        'leave': ['Deus te acompanhe, {display_name}', 'Falou {display_name}, ate mais'],
+                        'move': ['O tal do {display_name} trocou de canal'],
+                    },
                 }
             },
-            'default_provider': 'coqui',
             'cache': {
                 'enabled': True,
                 'max_size_mb': 1024,
-                'directory': '/app/assets'
-            }
+                'directory': '/app/assets',
+            },
         }
 
     async def initialize(self) -> bool:
-        """Initialize the TTS manager and selected provider."""
+        """Initialize Edge TTS."""
         try:
-            # Check if provider exists in config
             providers_config = self.config.get('providers', {})
-            if self.provider_name not in providers_config:
-                self.logger.error(f"Provider '{self.provider_name}' not found in config")
+            provider_config = providers_config.get(self.provider_name)
+
+            if not provider_config:
+                self.logger.error("Edge TTS provider configuration not found")
                 return False
 
-            provider_config = providers_config[self.provider_name]
-
-            # Check if provider is enabled
             if not provider_config.get('enabled', False):
-                self.logger.error(f"Provider '{self.provider_name}' is disabled")
+                self.logger.error("Edge TTS provider is disabled")
                 return False
 
-            # Check if provider class exists
-            if self.provider_name not in self.providers:
-                self.logger.error(f"Provider class for '{self.provider_name}' not implemented")
-                return False
-
-            # Initialize provider
-            provider_class = self.providers[self.provider_name]
-            self.provider = provider_class(provider_config, self.cache_manager)
-
+            self.provider = EdgeTTSProvider(provider_config, self.cache_manager)
             success = await self.provider.initialize()
             if success:
-                self.logger.info(f"TTS Manager initialized with provider: {self.provider_name}")
+                self.logger.info("TTS Manager initialized with Edge TTS")
             else:
-                self.logger.error(f"Failed to initialize provider: {self.provider_name}")
+                self.logger.error("Failed to initialize Edge TTS")
 
             return success
 
@@ -515,28 +334,7 @@ class TTSManager:
 
         try:
             text = self.provider.get_message(message_type, **kwargs)
-
-            # Check if file exists and validate it matches expected text
-            if os.path.exists(output_path):
-                if self.validate_cache_file(text, output_path):
-                    self.logger.info(f"Using cached TTS file: {os.path.basename(output_path)} for message '{message_type}'")
-                    return True
-                else:
-                    self.logger.info(f"Cache file invalid for message '{message_type}', regenerating...")
-                    self.cache_manager.invalidate_file(output_path)
-
-            # Generate new TTS audio
-            self.logger.info(f"Generating new TTS audio for message '{message_type}': '{text}'")
-            success = await self.provider.synthesize(text, output_path)
-
-            if success:
-                self.logger.info(f"TTS audio generated successfully: {os.path.basename(output_path)}")
-                self.cache_manager.add_file(output_path)
-            else:
-                self.logger.error(f"Failed to generate TTS audio for message '{message_type}'")
-
-            return success
-
+            return await self.synthesize_text(text, output_path, **kwargs)
         except Exception as e:
             self.logger.error(f"Error synthesizing message: {e}")
             return False
@@ -548,16 +346,18 @@ class TTSManager:
             return False
 
         try:
-            # Check if file exists and validate it matches expected text
             if os.path.exists(output_path):
                 if self.validate_cache_file(text, output_path):
+                    self.cache_manager.record_hit()
                     self.logger.info(f"Using cached TTS file: {os.path.basename(output_path)} for text: '{text[:50]}{'...' if len(text) > 50 else ''}'")
                     return True
-                else:
-                    self.logger.info(f"Cache file invalid for text, regenerating...")
-                    self.cache_manager.invalidate_file(output_path)
 
-            # Generate new TTS audio
+                self.cache_manager.record_miss()
+                self.logger.info("Cache file invalid for text, regenerating...")
+                self.cache_manager.invalidate_file(output_path)
+            else:
+                self.cache_manager.record_miss()
+
             self.logger.info(f"Generating new TTS audio for text: '{text[:50]}{'...' if len(text) > 50 else ''}'")
             success = await self.provider.synthesize(text, output_path, **kwargs)
 
@@ -576,7 +376,6 @@ class TTSManager:
     def generate_cache_path(self, text: str, prefix: str = "tts", suffix: str = ".mp3") -> str:
         """Generate a cache path for TTS audio."""
         cache_dir = self.cache_manager.config.get('directory', '/app/assets')
-        # Use full hash for better collision resistance
         text_hash = hashlib.md5(text.encode()).hexdigest()
         filename = f"{prefix}_{self.provider_name}_{text_hash}{suffix}"
         return os.path.join(cache_dir, filename)
@@ -586,29 +385,18 @@ class TTSManager:
         if not os.path.exists(file_path):
             return False
 
-        # Extract hash from filename
         filename = os.path.basename(file_path)
         try:
-            # Expected format: prefix_provider_hash.extension
-            parts = filename.split('_')
-            if len(parts) < 3:
-                return False
-
-            # Get hash part (remove extension)
-            hash_with_ext = parts[2]
-            cached_hash = hash_with_ext.split('.')[0]
-
-            # Calculate expected hash
+            hash_with_ext = filename.rsplit('_', 1)[1]
+            cached_hash = os.path.splitext(hash_with_ext)[0]
             expected_hash = hashlib.md5(expected_text.encode()).hexdigest()
-
             return cached_hash == expected_hash
-
         except (IndexError, AttributeError):
             self.logger.warning(f"Invalid cache filename format: {filename}")
             return False
 
     def get_message(self, message_type: str, **kwargs) -> Optional[str]:
-        """Get a formatted message for the given type via the active provider."""
+        """Get a formatted message for the given type via Edge TTS."""
         if not self.provider:
             return None
         return self.provider.get_message(message_type, **kwargs)

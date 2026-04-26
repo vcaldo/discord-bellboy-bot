@@ -1,53 +1,43 @@
 # TTS Configuration Guide
 
-This bot supports multiple Text-to-Speech (TTS) providers through a configurable system. The TTS provider and its settings are managed through environment variables and a YAML configuration file.
+Discord Bellboy Bot uses Microsoft Edge TTS for all voice announcements.
 
 ## Configuration
 
-### Environment Variables
-
-Set the `TTS_PROVIDER` environment variable to choose your TTS provider:
-
-```bash
-TTS_PROVIDER=coqui  # Currently supported: coqui
-```
-
-### TTS Configuration File
-
-The `tts-config.yaml` file contains all provider-specific configurations:
+TTS settings are managed in `tts-config.yaml`:
 
 ```yaml
 providers:
-  coqui:
-    name: "Coqui TTS"
+  edge:
+    name: "Edge TTS"
     enabled: true
-    model: "tts_models/en/ljspeech/fast_pitch"
-    language: "en"
+    voice: "pt-PT-DuarteNeural"
     settings:
-      progress_bar: false
       output_format: "mp3"
-      audio_quality: "128k"
-      volume: "1.1"
     messages:
-      join: "Bem vindo {display_name}"
-      leave: "tchau tchau {display_name}"
-      move: "trocou de canal {display_name}"
+      join:
+        - "Bem vindo {display_name}"
+      leave:
+        - "Falou {display_name}, ate mais"
+      move:
+        - "O tal do {display_name} trocou de canal"
 
-default_provider: "coqui"
+cooldown_seconds: 60
 
 cache:
   enabled: true
-  max_files: 50
+  max_size_mb: 1024
   directory: "/app/assets"
 ```
 
-## Currently Supported Providers
+## Edge TTS
 
-### Coqui TTS
-- **Provider ID**: `coqui`
-- **Description**: Open-source TTS with multiple model support
-- **Requirements**: `TTS` package
-- **Installation**: `pip install TTS`
+- **Provider**: Microsoft Edge TTS via the `edge-tts` package
+- **Audio format**: MP3
+- **Voice**: Controlled by `providers.edge.voice`
+- **Provider selection**: Not configurable; Edge TTS is always used
+
+You can change the voice by setting another Edge neural voice in `tts-config.yaml`.
 
 ## Message Types
 
@@ -57,66 +47,88 @@ The TTS system supports three message types:
 - **leave**: Played when a user leaves a voice channel
 - **move**: Played when a user moves between voice channels
 
-Each message type can use placeholders like `{display_name}` that will be replaced with actual values.
+Each message can use placeholders like `{display_name}`. A message type can be either a string or a list of strings; lists rotate between available messages.
 
-### Special User Messages
+## Special User Messages
 
-You can define alternate messages for specific users by:
+You can define alternate messages for specific users by adding `_alt` message types:
 
-1. Adding alternate message types in your provider configuration:
-   ```yaml
-   messages:
-     join: "Welcome {display_name}"
-     leave: "Goodbye {display_name}"
-     move: "Moved channels {display_name}"
-     join_alt: "The boss {display_name} has arrived!"
-     leave_alt: "The boss {display_name} has left!"
-     move_alt: "The boss {display_name} switched channels!"
-   ```
+```yaml
+providers:
+  edge:
+    messages:
+      join: "Welcome {display_name}"
+      leave: "Goodbye {display_name}"
+      move: "Moved channels {display_name}"
+      join_alt: "The boss {display_name} has arrived!"
+      leave_alt: "The boss {display_name} has left!"
+      move_alt: "The boss {display_name} switched channels!"
+```
 
-2. Setting the `SPECIAL_USERS` environment variable with comma-separated Discord user IDs:
-   ```bash
-   SPECIAL_USERS=123456789012345678,987654321098765432
-   ```
+Then set `SPECIAL_USERS` with comma-separated Discord user IDs:
 
-When a user in the `SPECIAL_USERS` list joins, leaves, or moves, the bot will use the `_alt` version of the message if it exists. If no alternate message is defined, it falls back to the regular message.
+```bash
+SPECIAL_USERS=123456789012345678,987654321098765432
+```
 
-## Adding New Providers
-
-To add a new TTS provider:
-
-1. Create a new provider class inheriting from `TTSProvider` in `app/tts/tts_manager.py`
-2. Implement the required abstract methods:
-   - `provider_name`: Return the unique provider identifier
-   - `initialize()`: Initialize the provider (async)
-   - `synthesize()`: Generate audio from text (async)
-3. Add the provider to the `providers` registry in `TTSManager.__init__()`
-4. Add provider configuration to `tts-config.yaml`
-5. Update this documentation
+When a user in `SPECIAL_USERS` joins, leaves, or moves, the bot uses the `_alt` message if it exists. Otherwise, it falls back to the regular message.
 
 ## Cache Management
 
-The TTS system includes automatic cache management:
+Generated MP3 files are cached to improve performance:
 
-- Generated audio files are cached to improve performance
-- Cache size is limited (configurable via `cache.max_files`)
-- Oldest files are automatically removed when the cache is full
-- Cache directory is configurable via `cache.directory`
+- Cache size is limited by `cache.max_size_mb`
+- Cache directory is configured by `cache.directory`
+- Oldest cached files are removed automatically when the size limit is exceeded
+- `TTS_CACHE_MAX_SIZE_MB` can override the configured cache size
+
+### Cache Metrics
+
+Cache stats are exposed in `/tmp/bellboy_health.json` under the `tts_cache` key for local collectors:
+
+| Field | Description |
+|-------|-------------|
+| `enabled` | Whether TTS caching is enabled |
+| `directory` | Cache directory path |
+| `current_files` | Number of tracked cached MP3 files |
+| `total_size_bytes` | Total tracked cache size in bytes |
+| `total_size_mb` | Total tracked cache size in MB |
+| `max_size_mb` | Configured cache size limit in MB |
+| `usage_percent` | Percent of the configured cache limit currently used |
+| `hits` | Cached files reused since process start |
+| `misses` | Cache misses since process start |
+| `hit_rate_percent` | Cache hit percentage since process start |
+| `invalidations` | Invalid cache files removed since process start |
+| `evictions` | Old cache files removed by size cleanup since process start |
+| `files_added` | Generated files added to cache since process start |
+
+When New Relic is enabled, the health loop also publishes these custom metrics every `HEALTH_CHECK_INTERVAL` seconds. Size, usage, and hit-rate metrics are gauges; count metrics are deltas since the previous publish.
+
+| Metric | Source field |
+|--------|--------------|
+| `Custom/TTS/Cache/Enabled` | `enabled` |
+| `Custom/TTS/Cache/CurrentFiles` | `current_files` |
+| `Custom/TTS/Cache/TotalSizeMB` | `total_size_mb` |
+| `Custom/TTS/Cache/MaxSizeMB` | `max_size_mb` |
+| `Custom/TTS/Cache/UsagePercent` | `usage_percent` |
+| `Custom/TTS/Cache/Hits` | `hits` |
+| `Custom/TTS/Cache/Misses` | `misses` |
+| `Custom/TTS/Cache/HitRatePercent` | `hit_rate_percent` |
+| `Custom/TTS/Cache/Invalidations` | `invalidations` |
+| `Custom/TTS/Cache/Evictions` | `evictions` |
+| `Custom/TTS/Cache/FilesAdded` | `files_added` |
 
 ## Troubleshooting
 
 ### TTS Not Working
-1. Check that the required packages are installed
-2. Verify the provider is enabled in `tts-config.yaml`
-3. Check the logs for initialization errors
-4. Ensure ffmpeg is available for audio conversion
 
-### Audio Quality Issues
-- Adjust the `audio_quality` setting in the provider configuration
-- Try different models (for Coqui TTS)
-- Check the `volume` setting in ffmpeg options
+1. Check that `edge-tts` is installed.
+2. Verify `providers.edge.enabled` is `true` in `tts-config.yaml`.
+3. Ensure the configured Edge voice name is valid.
+4. Check the logs for initialization or synthesis errors.
 
-### Performance Issues
-- Reduce cache size if disk space is limited
-- Consider using faster TTS models
-- Monitor TTS generation times in logs
+### Audio Playback Issues
+
+- Ensure `ffmpeg` is installed and available in the runtime.
+- Confirm the bot has Discord voice permissions to connect and speak.
+- Check that the cache directory is writable.

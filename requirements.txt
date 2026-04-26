@@ -8,12 +8,5 @@ PyYAML>=6.0,<7.0.0
 # New Relic monitoring
 newrelic>=11.0.0
 
-# Audio dependencies for Coqui TTS
-numpy>=1.21.0
-soundfile>=0.12.1
-
-# Coqui TTS - using stable version
-TTS==0.22.0
-
 # Edge TTS - Microsoft Edge neural voices
 edge-tts>=6.1.9

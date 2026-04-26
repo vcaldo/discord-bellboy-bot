@@ -9,30 +9,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # Set work directory
 WORKDIR /app
 
-# Install system dependencies required for PyNaCl, discord.py, and Coqui TTS
-RUN apt-get update && apt-get install -y \
-    gcc \
-    g++ \
-    make \
-    libffi-dev \
-    libsodium-dev \
+# Install runtime dependencies required for Discord voice playback
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libsodium23 \
     ffmpeg \
-    alsa-utils \
-    libsndfile1 \
-    libsndfile1-dev \
-    build-essential \
-    python3-dev \
-    git \
-    pkg-config \
-    libssl-dev \
-    libavcodec-dev \
-    libavformat-dev \
-    libavdevice-dev \
-    libportaudio2 \
-    libportaudiocpp0 \
-    portaudio19-dev \
-    rustc \
-    cargo \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first to leverage Docker cache
@@ -53,7 +33,7 @@ COPY newrelic.ini .
 # Create logs directory
 RUN mkdir -p logs
 
-# Create assets directory for TTS files
+# Create assets directory for cached TTS files
 RUN mkdir -p assets
 
 # Create a non-root user for security

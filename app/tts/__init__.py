@@ -1,8 +1,7 @@
 """
-TTS module for Discord Bellboy Bot.
-Provides text-to-speech functionality with multiple provider support.
+Edge TTS module for Discord Bellboy Bot.
 """
 
-from .tts_manager import TTSManager, TTSProvider, CoquiTTSProvider, TTSCacheManager
+from .tts_manager import EdgeTTSProvider, TTSCacheManager, TTSManager
 
-__all__ = ['TTSManager', 'TTSProvider', 'CoquiTTSProvider', 'TTSCacheManager']
+__all__ = ['TTSManager', 'EdgeTTSProvider', 'TTSCacheManager']

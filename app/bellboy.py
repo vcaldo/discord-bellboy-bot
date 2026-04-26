@@ -37,7 +37,7 @@ if NEW_RELIC_LICENSE_KEY:
 else:
     print("New Relic license key not found - monitoring disabled")
 
-# Try to import TTS, but make it optional
+# Try to import Edge TTS, but make it optional
 try:
     from tts import TTSManager
     TTS_AVAILABLE = True
@@ -48,7 +48,6 @@ except ImportError:
 # Configuration
 DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
 LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO').upper()
-TTS_PROVIDER = os.getenv('TTS_PROVIDER', 'coqui')  # Default to coqui
 IGNORED_CHANNEL_ID = os.getenv('IGNORED_CHANNEL_ID')  # Channel ID to ignore when selecting busiest channel
 IGNORED_USERS = os.getenv('IGNORED_USERS', '')  # Comma-separated user IDs to never announce
 
@@ -90,7 +89,7 @@ class BellboyBot(discord.Client):
         self._setup_logging()
         self.logger = logging.getLogger('bellboy')
 
-        # Initialize Coqui TTS
+        # Initialize Edge TTS
         self._init_tts()
 
         # Per-user cooldown tracking: member_id -> last salute timestamp
@@ -107,6 +106,7 @@ class BellboyBot(discord.Client):
         self._total_tts_errors: int = 0  # cumulative TTS/playback failures
         self._last_join_at: float = 0.0  # epoch of most recent join
         self._last_join_channel: str = ''  # channel name of most recent join
+        self._last_tts_cache_metric_counts: Dict[str, float] = {}
 
         # Test New Relic transaction
         if NEW_RELIC_LICENSE_KEY:
@@ -115,6 +115,7 @@ class BellboyBot(discord.Client):
     def _write_health(self) -> None:
         """Write current health status to a file for Docker healthcheck and metric collectors."""
         try:
+            cache_stats = self._get_tts_cache_stats()
             health = {
                 'timestamp': time.time(),
                 'start_time': self._start_time,
@@ -124,7 +125,7 @@ class BellboyBot(discord.Client):
                 'bot_user_name': str(self.user) if self.user else '',
                 'gateway_latency_ms': round(self.latency * 1000.0, 2) if self._bot_ready else 0.0,
                 'guild_count': len(self.guilds) if self._bot_ready else 0,
-                'tts_provider': TTS_PROVIDER,
+                'tts_provider': 'edge',
                 'tts_available': bool(self.tts_manager and getattr(self.tts_manager, 'is_available', False)),
                 'total_voice_joins': self._total_voice_joins,
                 'total_voice_leaves': self._total_voice_leaves,
@@ -132,6 +133,7 @@ class BellboyBot(discord.Client):
                 'total_tts_errors': self._total_tts_errors,
                 'last_join_at': self._last_join_at,
                 'last_join_channel': self._last_join_channel,
+                'tts_cache': cache_stats,
                 'guilds': [],
             }
             if self._bot_ready:
@@ -161,6 +163,56 @@ class BellboyBot(discord.Client):
         except Exception:
             pass  # health write must never crash the bot
 
+    def _get_tts_cache_stats(self) -> Dict[str, object]:
+        """Return cache stats for health output and metrics."""
+        if not self.tts_manager or not self.tts_manager.cache_manager:
+            return {
+                'enabled': False,
+                'directory': '',
+                'max_size_mb': 0,
+                'current_files': 0,
+                'total_size_mb': 0,
+                'total_size_bytes': 0,
+                'usage_percent': 0,
+                'hits': 0,
+                'misses': 0,
+                'hit_rate_percent': 0,
+                'invalidations': 0,
+                'evictions': 0,
+                'files_added': 0,
+            }
+
+        return self.tts_manager.cache_manager.get_cache_stats()
+
+    def _record_tts_cache_metrics(self, cache_stats: Dict[str, object]) -> None:
+        """Publish TTS cache stats as New Relic custom metrics."""
+        gauge_values = {
+            'Custom/TTS/Cache/Enabled': 1 if cache_stats.get('enabled') else 0,
+            'Custom/TTS/Cache/CurrentFiles': cache_stats.get('current_files', 0),
+            'Custom/TTS/Cache/TotalSizeMB': cache_stats.get('total_size_mb', 0),
+            'Custom/TTS/Cache/MaxSizeMB': cache_stats.get('max_size_mb', 0),
+            'Custom/TTS/Cache/UsagePercent': cache_stats.get('usage_percent', 0),
+            'Custom/TTS/Cache/HitRatePercent': cache_stats.get('hit_rate_percent', 0),
+        }
+
+        for metric_name, metric_value in gauge_values.items():
+            newrelic.agent.record_custom_metric(metric_name, float(metric_value))
+
+        counter_fields = {
+            'Custom/TTS/Cache/Hits': 'hits',
+            'Custom/TTS/Cache/Misses': 'misses',
+            'Custom/TTS/Cache/Invalidations': 'invalidations',
+            'Custom/TTS/Cache/Evictions': 'evictions',
+            'Custom/TTS/Cache/FilesAdded': 'files_added',
+        }
+
+        for metric_name, field_name in counter_fields.items():
+            current_value = float(cache_stats.get(field_name, 0))
+            previous_value = self._last_tts_cache_metric_counts.get(field_name, current_value)
+            metric_delta = max(0.0, current_value - previous_value)
+            self._last_tts_cache_metric_counts[field_name] = current_value
+            newrelic.agent.record_custom_metric(metric_name, metric_delta)
+
     async def _health_loop(self) -> None:
         """Background task: periodically write health status and check for stale voice."""
         await self.wait_until_ready()
@@ -170,6 +222,7 @@ class BellboyBot(discord.Client):
         while not self.is_closed():
             try:
                 self._write_health()
+                self._record_tts_cache_metrics(self._get_tts_cache_stats())
                 await self._check_stale_voice()
             except Exception as e:
                 self.logger.error(f"Error in health loop: {e}")
@@ -273,14 +326,13 @@ class BellboyBot(discord.Client):
         # Check if TTS is available
         if not TTS_AVAILABLE:
             self.logger.warning("TTS module not available - TTS functionality will be disabled")
-            self.logger.info("Install TTS dependencies with: pip install TTS PyYAML")
+            self.logger.info("Install TTS dependencies with: pip install edge-tts PyYAML")
             self.tts_manager = None
             return
 
         try:
-            # Initialize TTS manager with configured provider
-            self.logger.info(f"Initializing TTS Manager with provider: {TTS_PROVIDER}")
-            self.tts_manager = TTSManager(provider_name=TTS_PROVIDER)
+            self.logger.info("Initializing TTS Manager with Edge TTS")
+            self.tts_manager = TTSManager()
 
             # Initialize asynchronously - we'll do this in the ready event
             self.logger.info("TTS Manager created, will initialize on bot ready")
@@ -612,7 +664,7 @@ class BellboyBot(discord.Client):
                 )
 
                 if tts_success:
-                    self.logger.info(f"TTS Manager initialized successfully with provider: {TTS_PROVIDER}")
+                    self.logger.info("TTS Manager initialized successfully with Edge TTS")
 
                     # Log cache statistics
                     if self.tts_manager.cache_manager:
