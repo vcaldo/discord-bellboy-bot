@@ -234,6 +234,7 @@ class BellboyBot(discord.Client):
                         'voice_channel_id': str(channel.id) if channel else '',
                         'voice_channel_name': channel.name if channel else '',
                         'voice_channel_members': self._count_human_members(channel) if channel else 0,
+                        'voice_channel_usernames': [self._member_username(member) for member in self._get_human_members(channel)] if channel else [],
                         'voice_endpoint': getattr(vc, 'endpoint', '') or '' if vc else '',
                         'voice_latency_ms': round(getattr(vc, 'latency', 0.0) * 1000.0, 2) if vc else 0.0,
                         'voice_average_latency_ms': round(getattr(vc, 'average_latency', 0.0) * 1000.0, 2) if vc else 0.0,
@@ -298,6 +299,50 @@ class BellboyBot(discord.Client):
             self._last_tts_cache_metric_counts[field_name] = current_value
             newrelic.agent.record_custom_metric(metric_name, metric_delta)
 
+    def _record_voice_channel_user_metrics(self) -> None:
+        """Publish current voice channel occupancy and usernames to New Relic."""
+        total_voice_users = 0
+        active_voice_channels = 0
+        sampled_at = time.time()
+
+        for guild in self.guilds:
+            if not self._is_monitoring_guild(guild):
+                continue
+
+            safe_guild_name = self._safe_guild_name(guild)
+            for channel in guild.voice_channels:
+                if IGNORED_CHANNEL_ID and str(channel.id) == IGNORED_CHANNEL_ID:
+                    continue
+
+                human_members = self._get_human_members(channel)
+                human_member_count = len(human_members)
+                if human_member_count == 0:
+                    continue
+
+                total_voice_users += human_member_count
+                active_voice_channels += 1
+
+                channel_attributes = {
+                    'guild.id': str(guild.id),
+                    'guild.name': safe_guild_name,
+                    'channel.id': str(channel.id),
+                    'channel.name': channel.name,
+                    'voice.human_member_count': human_member_count,
+                    'sampled_at': sampled_at,
+                }
+                newrelic.agent.record_custom_event('DiscordVoiceChannel', channel_attributes)
+
+                for member in human_members:
+                    user_attributes = {
+                        **channel_attributes,
+                        **self._member_telemetry_attributes(member),
+                        'voice.present': 1,
+                    }
+                    newrelic.agent.record_custom_event('DiscordVoiceChannelUser', user_attributes)
+
+        newrelic.agent.record_custom_metric('Custom/Discord/VoiceChannelUsers', total_voice_users)
+        newrelic.agent.record_custom_metric('Custom/Discord/ActiveVoiceChannels', active_voice_channels)
+
     async def _health_loop(self) -> None:
         """Background task: periodically write health status and check for stale voice."""
         await self.wait_until_ready()
@@ -308,6 +353,7 @@ class BellboyBot(discord.Client):
             try:
                 self._write_health()
                 self._record_tts_cache_metrics(self._get_tts_cache_stats())
+                self._record_voice_channel_user_metrics()
                 await self._check_stale_voice()
             except Exception as e:
                 self._record_runtime_error('health_loop', e)
@@ -446,13 +492,36 @@ class BellboyBot(discord.Client):
         except Exception:
             return f"Member_{member.id}"
 
-    def _count_human_members(self, channel: discord.VoiceChannel) -> int:
+    def _member_username(self, member: discord.Member) -> str:
+        """Return the Discord username for telemetry."""
+        try:
+            return member.name or f"Member_{member.id}"
+        except Exception:
+            return f"Member_{member.id}"
+
+    def _member_telemetry_attributes(self, member: discord.Member) -> Dict[str, object]:
+        """Return stable member attributes for New Relic telemetry."""
+        return {
+            'member.id': str(member.id),
+            'member.username': self._member_username(member),
+            'member.display_name': member.display_name,
+            'member.global_name': getattr(member, 'global_name', '') or '',
+            'member.discriminator': getattr(member, 'discriminator', '') or '',
+        }
+
+    def _get_human_members(self, channel: Optional[discord.VoiceChannel]) -> list[discord.Member]:
+        """Return non-bot members in a voice channel, excluding all bots and applications."""
+        if channel is None:
+            return []
+
+        return [member for member in channel.members if self._is_human_member(member)]
+
+    def _count_human_members(self, channel: Optional[discord.VoiceChannel]) -> int:
         """Count non-bot members in a voice channel, excluding all bots and applications."""
         if channel is None:
             return 0
 
-        # Filter out bots, applications, and the bot itself
-        human_members = [member for member in channel.members if self._is_human_member(member)]
+        human_members = self._get_human_members(channel)
 
         member_names = [m.display_name for m in human_members]
         self.logger.debug(f"Channel '{channel.name}' has {len(human_members)} human members: {member_names}")
@@ -864,6 +933,8 @@ class BellboyBot(discord.Client):
                 'guild.name': self._safe_guild_name(member.guild),
                 'member.id': member.id,
                 'member.name': member.display_name,
+                'member.username': self._member_username(member),
+                'member.global_name': getattr(member, 'global_name', '') or '',
                 'member.is_bot': member.bot
             })
 
