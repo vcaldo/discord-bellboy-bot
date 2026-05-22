@@ -8,7 +8,6 @@ A Discord bot that monitors voice channel activity and provides intelligent Edge
 - **Smart TTS Notifications**: Announces when users join, leave, or move between channels
 - **Edge TTS Support**: Uses Microsoft Edge neural voices for announcements
 - **Intelligent Behavior**: Only follows real users, ignores bots and applications
-- **New Relic Integration**: Optional monitoring and performance tracking
 - **Configurable Messages**: Customize TTS announcements via YAML configuration
 - **Automatic Caching**: Efficient TTS file management with automatic cleanup
 
@@ -79,11 +78,6 @@ providers:
 | `SPECIAL_USERS` | Comma-separated Discord user IDs for alternate messages | Optional |
 | `SALUTE_COOLDOWN_SECONDS` | Override the TTS salute cooldown | `tts-config.yaml` |
 | `TTS_CACHE_MAX_SIZE_MB` | Override generated audio cache size | `tts-config.yaml` |
-| `NEW_RELIC_LICENSE_KEY` | New Relic monitoring (optional) | Disabled |
-
-## Metrics
-
-The bot writes health and runtime metrics to `/tmp/bellboy_health.json`. TTS cache metrics are exposed under `tts_cache` and are also published to New Relic as `Custom/TTS/Cache/*` metrics when New Relic is enabled.
 
 ## Discord Bot Setup
 
@@ -101,7 +95,6 @@ The bot writes health and runtime metrics to `/tmp/bellboy_health.json`. TTS cac
 - [Setup Guide](SETUP_GUIDE.md) - Detailed installation and configuration
 - [TTS Configuration](TTS_CONFIGURATION.md) - Edge TTS configuration guide
 - [TTS Troubleshooting](TTS_TROUBLESHOOTING.md) - Common issues and solutions
-- [New Relic Setup](NEW_RELIC_SETUP.md) - Monitoring configuration
 
 ## Development
 
